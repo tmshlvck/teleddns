@@ -1,0 +1,14 @@
+DDNS REST reporter
+by Tomas Hlavacek (tmshlvck@gmail.com)
+
+Requirements for client:
+
+Python 2.7+
+httplib2 (Debian package python-httplib2)
+
+Requirements for serve:
+Python 2.7+
+Apache
+WSGI module
+
+
