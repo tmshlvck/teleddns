@@ -25,6 +25,7 @@ enable_ipv6=True
 enable_ipv4=False
 interfaces=['eth0','wlan0']
 bin_ip='/bin/ip'
+sleep = 0 # add some time when using the script with network manager
 debug = 1
 
 
@@ -37,6 +38,7 @@ import syslog
 import subprocess
 import re
 import ipaddr
+import time
 
 
 def d(message):
@@ -146,13 +148,16 @@ def report_data_rest(url,data,name=None,password=None):
 
         if int(resp['status']) == 200:
                 d("Reported "+str(data)+" OK.")
-		print content
+		d("Result: "+content)
         else:
                 log("Reporting "+str(data)+" failed with code "+str(resp['status'])+".")
-                print content
+		d("Result: "+content)
 
 
 def main():
+        if sleep:
+		d("Sleeping for "+str(sleep)+"s.")
+                time.sleep(sleep)
         # report addresses
         (ipv4,ipv6) = get_hostaddr()
         data = {'ipv4':ipv4, 'ipv6':ipv6}
