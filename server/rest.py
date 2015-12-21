@@ -130,6 +130,8 @@ def update(name):
                                 else:
                                         log("Update data are still the same. Nothing to do.")
                                 return make_response(jsonify({'status':'OK'}),200)
+			else:
+				raise Exception("Name "+name+" not allowed.")
 
                 except Exception as e:
 			log(str(e))
@@ -146,7 +148,8 @@ def get(name):
                         name=name.decode('utf8').encode('ascii')
                         if name in config.allowed_names:
                                 response = query_dns(name)
-
+                        else:
+				raise Exception("Name "+name+" not allowed.")
                 except Exception as e:
 			log(str(e))
                         sys.stderr.write(str(e))
