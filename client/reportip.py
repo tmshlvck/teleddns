@@ -29,7 +29,8 @@ sleep = 0 # add some time when using the script with network manager
 debug = 1
 
 
-
+import sys
+import getopt
 import os
 import re
 import httplib2
@@ -155,9 +156,35 @@ def report_data_rest(url,data,name=None,password=None):
 
 
 def main():
+	global debug
+
+	def usage():
+		print """reportip.py by Tomas Hlavacek (tmshlvck@gmail.com)
+  -d --debug : sets debugging output
+  -h --help : prints this help message
+"""
+
+	try:
+		opts, args = getopt.getopt(sys.argv[1:], "hd", ["help", "debug"])
+	except getopt.GetoptError as err:
+		print str(err)
+		usage()
+		sys.exit(2)
+
+	for o, a in opts:
+	        if o == '-d':
+			debug = 1
+		elif o == '-h':
+			usage()
+			sys.exit(0)
+		else:
+			assert False, "Unhandled option"
+
+
         if sleep:
 		d("Sleeping for "+str(sleep)+"s.")
                 time.sleep(sleep)
+
         # report addresses
         (ipv4,ipv6) = get_hostaddr()
         data = {'ipv4':ipv4, 'ipv6':ipv6}
