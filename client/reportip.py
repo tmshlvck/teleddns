@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 #
 # DDNS
-# (C) 2015, Tomas Hlavacek (tmshlvck@gmail.com)
+# (C) 2015-2017 Tomas Hlavacek (tmshlvck@gmail.com)
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -17,18 +17,6 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
-# Config
-report_url = "https://<host>/ddns/rest/update/<name>"
-http_name = '<name>'
-http_password = '<passwd>'
-enable_ipv6=True
-enable_ipv4=False
-interfaces=['eth0','wlan0']
-bin_ip='/bin/ip'
-sleep = 0 # add some time when using the script with network manager
-debug = 1
-
-
 import sys
 import getopt
 import os
@@ -40,6 +28,9 @@ import subprocess
 import re
 import ipaddr
 import time
+
+sys.path.insert(0, '/etc/ddns')
+from reportipconf import *
 
 
 def d(message):
@@ -54,8 +45,8 @@ def log(message):
                 syslog.syslog(message)
 
 
-ipv4regexp=re.compile('^\s+inet\s+(([0-9]{1,3}\.){3}[0-9]{1,3})/[0-9]{1,2}\s+')
-ipv6regexp=re.compile('^\s+inet6\s+(([0-9a-fA-F]{0,4}:){0,7}[0-9a-fA-F]{0,4})/[0-9]{1,3}\s+')
+ipv4regexp=re.compile(r'^\s+inet\s+(([0-9]{1,3}\.){3}[0-9]{1,3})/[0-9]{1,2}\s+')
+ipv6regexp=re.compile(r'^\s+inet6\s+(([0-9a-fA-F]{0,4}:){0,7}[0-9a-fA-F]{0,4})/[0-9]{1,3}\s+')
 def get_ipaddr(dev):
         p=subprocess.Popen([bin_ip, 'address', 'show', 'dev', dev],stdout=subprocess.PIPE)
         r=p.communicate()
