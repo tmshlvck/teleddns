@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# Inteligent Home
+# DDNS
 # (C) 2015, Tomas Hlavacek (tmshlvck@gmail.com)
 #
 # This program is free software: you can redistribute it and/or modify
@@ -65,9 +65,9 @@ update del %s
 """ % (config.dns_server, denormalize_dns(config.dns_zone), normalize_dns(name+'.'+config.dns_zone))
 
         if ipv6:
-                commands += "update add %s 3600 AAAA %s\n" % (normalize_dns(name+'.'+config.dns_zone), ipv6)
+                commands += "update add %s %d AAAA %s\n" % (normalize_dns(name+'.'+config.dns_zone), ipv6, config.rr_ttl)
         if ipv4:
-                commands += "update add %s 3600 A %s\n" % (normalize_dns(name+'.'+config.dns_zone), ipv4)
+                commands += "update add %s %d A %s\n" % (normalize_dns(name+'.'+config.dns_zone), ipv4, config.rr_ttl)
 
         commands += "send\n"
 

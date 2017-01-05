@@ -1,4 +1,4 @@
-# Inteligent Home
+# DDNS
 # (C) 2014, Tomas Hlavacek (tmshlvck@gmail.com)
 #
 # This program is free software: you can redistribute it and/or modify
@@ -22,6 +22,7 @@ nsupdate_key = 'hmac-md5:<keyname>:<secret>'
 
 dns_server = '127.0.0.1'
 dns_zone = 'zone.tld'
+rr_ttl = 60
 
 allowed_names = ['name',]
 
