@@ -5,6 +5,7 @@ Requirements for client:
 
 Python 2.7+
 httplib2 (Debian package python-httplib2)
+ipaddr (Debian package python-ipaddr)
 
 Requirements for serve:
 Python 2.7+
