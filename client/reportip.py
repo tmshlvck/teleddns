@@ -178,6 +178,10 @@ def main():
 
         # report addresses
         (ipv4,ipv6) = get_hostaddr()
+        if ipv4 == None and ipv6 == None:
+            # no connectivity -> nothing to report
+            d("No connectivity, nothing to report.")
+            return
         data = {'ipv4':ipv4, 'ipv6':ipv6}
         d("Sending: "+str(data))
         report_data_rest(report_url, data, http_name, http_password)
