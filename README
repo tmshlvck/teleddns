@@ -3,13 +3,11 @@ by Tomas Hlavacek (tmshlvck@gmail.com)
 
 Requirements for client:
 
-Python 2.7+
-httplib2 (Debian package python-httplib2)
-ipaddr (Debian package python-ipaddr)
+Python 3.2+
+httplib2 (Debian package python3-httplib2)
 
-Requirements for serve:
+Requirements for server:
 Python 2.7+
 Apache
 WSGI module
-
 

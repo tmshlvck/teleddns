@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 #
 # DDNS
 # (C) 2015-2017 Tomas Hlavacek (tmshlvck@gmail.com)
@@ -26,7 +26,7 @@ import json
 import syslog
 import subprocess
 import re
-import ipaddr
+import ipaddress
 import time
 
 sys.path.insert(0, '/etc/ddns')
@@ -48,13 +48,15 @@ def log(message):
 ipv4regexp=re.compile(r'^\s+inet\s+(([0-9]{1,3}\.){3}[0-9]{1,3})/[0-9]{1,2}\s+')
 ipv6regexp=re.compile(r'^\s+inet6\s+(([0-9a-fA-F]{0,4}:){0,7}[0-9a-fA-F]{0,4})/[0-9]{1,3}\s+')
 def get_ipaddr(dev):
-        p=subprocess.Popen([bin_ip, 'address', 'show', 'dev', dev],stdout=subprocess.PIPE)
+        p=subprocess.Popen([bin_ip, 'address', 'show', 'dev', dev],stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         r=p.communicate()
 
         ipv4 = []
         ipv6 = []
-        if r[0]:
-                for l in r[0].split('\n'):
+
+        res = r[0].decode('ascii')
+        if res:
+                for l in res.split('\n'):
                         m = ipv4regexp.match(l)
                         if m:
                                 ipv4.append(m.group(1))
@@ -68,7 +70,7 @@ def get_ipaddr(dev):
 def select_ipv4(ipv4list):
         if ipv4list:
                 for ip in ipv4list:
-                        ipo = ipaddr.IPAddress(ip)
+                        ipo = ipaddress.IPv4Address(ip)
                         if ipo.is_multicast:
                                 continue
                         if ipo.is_private:
@@ -88,7 +90,7 @@ def select_ipv6(ipv6list):
         if ipv6list:
                 noneui64=None
                 for ip in ipv6list:
-                        ipo = ipaddr.IPAddress(ip)
+                        ipo = ipaddress.IPv6Address(ip)
                         if ipo.is_multicast:
                                 continue
                         if ipo.is_private:
@@ -104,7 +106,7 @@ def select_ipv6(ipv6list):
                         if ipo.is_site_local:
                                 continue
 
-                        if ord(ipo.packed[11]) == 0xff and ord(ipo.packed[12]) == 0xfe:
+                        if ipo.packed[11] == 0xff and ipo.packed[12] == 0xfe:
                                 return ip
 
                         if not noneui64:
@@ -119,7 +121,7 @@ def get_hostaddr():
 
         for i in interfaces:
                 r = get_ipaddr(i)
-                d(str(i)+": "+str(r))
+                d("%s: %s" % (str(i), str(r)))
                 ipv4list += r[0]
                 ipv6list += r[1]
 
@@ -139,41 +141,41 @@ def report_data_rest(url,data,name=None,password=None):
                                   headers={'content-type':'application/json'} )
 
         if int(resp['status']) == 200:
-                d("Reported "+str(data)+" OK.")
-		d("Result: "+content)
+                d("Reported %s OK." % str(data))
+                d("Result: %s" % str(content))
         else:
-                log("Reporting "+str(data)+" failed with code "+str(resp['status'])+".")
-		d("Result: "+content)
+                log("Reporting %s failed with code %s." % (str(data), str(resp['status'])))
+                d("Result: %s" % str(content))
 
 
 def main():
-	global debug
+        global debug
 
-	def usage():
-		print """reportip.py by Tomas Hlavacek (tmshlvck@gmail.com)
+        def usage():
+                print("""reportip.py by Tomas Hlavacek (tmshlvck@gmail.com)
   -d --debug : sets debugging output
   -h --help : prints this help message
-"""
+""")
 
-	try:
-		opts, args = getopt.getopt(sys.argv[1:], "hd", ["help", "debug"])
-	except getopt.GetoptError as err:
-		print str(err)
-		usage()
-		sys.exit(2)
+        try:
+                opts, args = getopt.getopt(sys.argv[1:], "hd", ["help", "debug"])
+        except getopt.GetoptError as err:
+                print(str(err))
+                usage()
+                sys.exit(2)
 
-	for o, a in opts:
-	        if o == '-d':
-			debug = 1
-		elif o == '-h':
-			usage()
-			sys.exit(0)
-		else:
-			assert False, "Unhandled option"
+        for o, a in opts:
+                if o == '-d':
+                        debug = 1
+                elif o == '-h':
+                        usage()
+                        sys.exit(0)
+                else:
+                        assert False, "Unhandled option"
 
 
         if sleep:
-		d("Sleeping for "+str(sleep)+"s.")
+                d("Sleeping for %d s." % sleep)
                 time.sleep(sleep)
 
         # report addresses
@@ -183,9 +185,10 @@ def main():
             d("No connectivity, nothing to report.")
             return
         data = {'ipv4':ipv4, 'ipv6':ipv6}
-        d("Sending: "+str(data))
+        d("Sending: %s" % str(data))
         report_data_rest(report_url, data, http_name, http_password)
                 
 
 if __name__ == '__main__':
         main()
+
