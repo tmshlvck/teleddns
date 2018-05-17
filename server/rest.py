@@ -121,7 +121,7 @@ def update(name):
         if request.method == 'PUT':
                 try:
                         name=name.decode('utf8').encode('ascii')
-                        if config.allowed_names and name in config.allowed_names:
+                        if not config.allowed_names or name in config.allowed_names:
                                 data=request.get_json()
                                 q=query_dns(name)
                                 log("Compare: "+str(data)+" ?= "+str(q)+" "+str(q==data))
