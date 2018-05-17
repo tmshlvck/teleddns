@@ -2,7 +2,7 @@
 # Change the values to proper paths/ifaces/URLs
 #
 # Config for DDNS reportip.py
-report_url = "https://<host>/ddns/rest/update/<name>"
+report_url = "https://<host>/.ddns/rest/update/<name>"
 http_name = '<name>'
 http_password = '<passwd>'
 enable_ipv6=True
