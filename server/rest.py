@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 #
 # DDNS
-# (C) 2015, Tomas Hlavacek (tmshlvck@gmail.com)
+# (C) 2015-2018 Tomas Hlavacek (tmshlvck@gmail.com)
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -65,9 +65,9 @@ update del %s
 """ % (config.dns_server, denormalize_dns(config.dns_zone), normalize_dns(name+'.'+config.dns_zone))
 
         if ipv6:
-                commands += "update add %s %d AAAA %s\n" % (normalize_dns(name+'.'+config.dns_zone), ipv6, config.rr_ttl)
+                commands += "update add %s %d AAAA %s\n" % (normalize_dns(name+'.'+config.dns_zone), config.rr_ttl, ipv6)
         if ipv4:
-                commands += "update add %s %d A %s\n" % (normalize_dns(name+'.'+config.dns_zone), ipv4, config.rr_ttl)
+                commands += "update add %s %d A %s\n" % (normalize_dns(name+'.'+config.dns_zone), config.rr_ttl, ipv4)
 
         commands += "send\n"
 
@@ -121,7 +121,7 @@ def update(name):
         if request.method == 'PUT':
                 try:
                         name=name.decode('utf8').encode('ascii')
-                        if name in config.allowed_names:
+                        if config.allowed_names and name in config.allowed_names:
                                 data=request.get_json()
                                 q=query_dns(name)
                                 log("Compare: "+str(data)+" ?= "+str(q)+" "+str(q==data))
