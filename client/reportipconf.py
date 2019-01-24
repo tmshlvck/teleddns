@@ -2,7 +2,6 @@
 # Change the values to proper paths/ifaces/URLs
 #
 # Config for DDNS reportip.py
-
 hostname="testhost"
 enable_ipv6=True
 enable_ipv4=False
