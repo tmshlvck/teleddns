@@ -31,6 +31,7 @@ import reportipconf as config
 
 
 debug = config.debug
+encoding = 'utf-8'
 
 def d(message):
     if debug:
@@ -67,7 +68,7 @@ def get_dev_ipaddr(dev=None):
         (stdoutdata, stderrdata)=p.communicate()
 
         if stdoutdata:
-            for l in stdoutdata.decode('ascii').split('\n'):
+            for l in stdoutdata.decode(encoding).split('\n'):
                 m = ipv4regexp.match(l)
                 if m:
                     yield(m.group(1), 4)
@@ -187,7 +188,7 @@ def query_dns():
         d("Command finished. Returncode: %d. Output: %s" % (dig.returncode, str(r)))
 
         if r and r[0]:
-            for l in r[0].decode('ascii').split('\n'):
+            for l in r[0].decode(encoding).split('\n'):
                 m = regexpc.match(l)
                 if m and addrregexp.match(m.group(1)):
                     return m.group(1)
@@ -214,7 +215,7 @@ update del %s
         nsu=subprocess.Popen([config.bin_nsupdate, "-y", config.nsupdate_key],
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         d("Feeding data: \n%s---------------" % commands)
-        r=nsu.communicate(commands.encode("ascii"))
+        r=nsu.communicate(commands.encode(encoding))
         d("Update finished. Return code: %d. Output: %s" % (nsu.returncode, str(r)))
 
 
