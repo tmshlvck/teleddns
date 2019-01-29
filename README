@@ -1,13 +1,64 @@
-DDNS REST reporter
+DDNS (nsupdate) reporter
 by Tomas Hlavacek (tmshlvck@gmail.com)
 
 Requirements for client:
 
 Python 3.2+
-httplib2 (Debian package python3-httplib2)
+nsupdate & dig utils
 
-Requirements for server:
-Python 2.7+
-Apache
-WSGI module
+apt-get install knot-dnsutils
+
+Prepare the server config - example for Knot 2.4.0:
+
+1) Install Knot
+
+apt-get install knot
+
+2) generate TSIG key:
+
+keymgr tsig generate test
+
+3) put into config file (/etc/knot/knot.conf) the following content:
+
+server:
+    identity: ""
+    version: ""
+    user: "knot:knot"
+    listen: [ 0.0.0.0@53, ::@53 ]
+
+control:
+    listen: "knot.sock"
+
+log:
+  - target: stderr
+    any: warning
+
+  - target: syslog
+    any: info
+
+key:
+  - id: key_d_domain
+    algorithm: hmac-md5
+    secret: "xxxxxxxxxxxxxxxxxxxxx"
+
+acl:
+  - id: acl_update_d_domain
+    address: [0.0.0.0/0, ::/0]
+    key: key_d_domain
+    action: update
+
+zone:
+  - domain: "d.domain.cz."
+    file: "/var/lib/knot/d.domain.cz.zone"
+    acl: acl_update_d_domain
+
+4) Fill TSIG password to the server & client config. Move the reportipconf.py to /etc/ddns/
+
+5) Start Knot and test the reportip.py on the client. Move the reportip.py to /usr/local/sbin/ .
+
+6) (Optional for NetworkManager) Put the file 99dnsupdate into /etc/NetworkManager/dispatcher.d/ and make it executable.
+
+7) (Optional) Put the following line to /etc/crontab
+
+*/39 *  * * *   root    /usr/local/sbin/reportip.py >>/var/log/dnsupdate.log
 

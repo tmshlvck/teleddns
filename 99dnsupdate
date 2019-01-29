@@ -1,0 +1,11 @@
+#!/bin/bash
+
+BIN_NOHUP="/usr/bin/nohup"
+ 
+INTERFACE=$1
+STATUS=$2
+
+
+if [ "$STATUS" = "up" ]; then
+	$BIN_NOHUP /usr/local/sbin/reportip.py >> /var/log/dnsupdate.log
+fi
