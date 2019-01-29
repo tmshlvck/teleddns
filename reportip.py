@@ -84,19 +84,28 @@ def measure_ipv4(ipv4addr):
     except:
         return 0
 
+    d("IPv4 address: %s" % str(ipo))
+
     if ipo.is_multicast:
+        d("  -> multicast")
         return 0
     if ipo.is_private:
+        d("  -> private")
         return 0
     if ipo.is_unspecified:
+        d("  -> unspecified")
         return 0
     if ipo.is_reserved:
+        d("  -> reserved")
         return 0
     if ipo.is_loopback:
+        d("  -> loopback")
         return 0
     if ipo.is_link_local:
+        d("  -> link_local")
         return 0
 
+    d("  -> global_unicast")
     return 1
 
 
@@ -108,28 +117,38 @@ def measure_ipv6(ipv6addr):
             return False
 
     try:
-        ipo = ipaddress.IPv6Address(ip)
+        ipo = ipaddress.IPv6Address(ipv6addr)
     except:
         return 0
 
+    d("IPv6 address: %s" % str(ipo))
     if ipo.is_multicast:
+        d("  -> multicast")
         return 0
     if ipo.is_private:
+        d("  -> private")
         return 0
     if ipo.is_unspecified:
+        d("  -> unspecified")
         return 0
     if ipo.is_reserved:
+        d("  -> reserved")
         return 0
     if ipo.is_loopback:
+        d("  -> loopback")
         return 0
     if ipo.is_link_local:
+        d("  -> link_local")
         return 0
     if ipo.is_site_local:
+        d("  -> site_local")
         return 0
     if is_eui64(ipo):
+        d("  -> EUI64")
         return 2
 
-    return 2
+    d("  -> global_unicast")
+    return 1
 
 
 def get_host_ipaddr(devs, enable_ipv4, enable_ipv6):
@@ -154,7 +173,7 @@ def get_host_ipaddr(devs, enable_ipv4, enable_ipv6):
     ipv4 = sorted(ipv4list, key=measure_ipv4, reverse=True)
     ipv6 = sorted(ipv6list, key=measure_ipv6, reverse=True)
 
-    return (ipv4[0] if enable_ipv4 and ipv4 else None, ipv6[0] if enable_ipv6 and ipv6 else None)
+    return (ipv4[0] if enable_ipv4 and ipv4 and measure_ipv4(ipv4[0]) > 0 else None, ipv6[0] if enable_ipv6 and ipv6 and measure_ipv6(ipv6[0]) > 0 else None)
 
 
 def normalize_dns(name):
