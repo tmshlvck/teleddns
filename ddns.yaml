@@ -1,0 +1,29 @@
+# Put this file to /etc/ddns/
+# Change the values to proper paths/ifaces/URLs
+#
+# Config for DDNS reportip.py
+
+---
+sleep: 4
+# add some time when using the script with network manager
+
+debug: 1
+
+bin_nsupdate: '/usr/bin/nsupdate'
+bin_dig: '/usr/bin/dig'
+bin_ip: '/bin/ip'
+
+nsupdate_key: 'secret'
+dns_server: 'aule.elfove.cz'
+dns_zone: 'd.elfove.cz'
+rr_ttl: 60
+
+hostname: 'tapir'
+enable_ipv6: True
+enable_ipv4: False
+interfaces:
+        - 'enp0s20f0u1'
+        - 'wlp58s0'
+        - '-tun0'
+        - '*'
+

@@ -25,57 +25,99 @@ import subprocess
 import re
 import ipaddress
 import time
+import yaml
 
-sys.path.insert(0, '/etc/ddns')
-import reportipconf as config
+config_file = '/etc/ddns/ddns.yaml'
+config = {'debug': False,}
 
-
-debug = config.debug
 encoding = 'utf-8'
 
 def d(message):
-    if debug:
+    if config['debug']:
         print(message)
 
 def log(message):
-    if debug:
+    if config['debug']:
         print(message)
         syslog.syslog(message)
     else:
         syslog.syslog(message)
 
 
+def read_config(cfgfile):
+    global config
+    config.update(yaml.load(open(cfgfile, 'r')))
 
-def get_dev_ipaddr(dev=None):
+
+def run_ipaddr(dev=None):
+    devregexp=re.compile(r'^\s*[0-9]+:\s+([0-9a-zA-Z]+):\s+<([^>]+)>')
     ipv4regexp=re.compile(r'^\s+inet\s+(([0-9]{1,3}\.){3}[0-9]{1,3})(/[0-9]{1,2})?\s+')
     ipv6regexp=re.compile(r'^\s+inet6\s+(([0-9a-fA-F]{0,4}:){0,7}[0-9a-fA-F]{0,4})/[0-9]{1,3}\s+')
 
     if dev:
-        if type(dev) is str:
-            dev_list = [dev]
-        else:
-            dev_list = dev
+        c = [config['bin_ip'], 'address', 'show', 'dev', dev]
     else:
-        dev_list = [None]
+        c = [config['bin_ip'], 'address', 'show']
 
-    for d in dev_list:
-        if d:
-            c = [config.bin_ip, 'address', 'show', 'dev', d]
+    p=subprocess.Popen(c, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    (stdoutdata, stderrdata)=p.communicate()
+
+    if stdoutdata:
+        dev = None
+        for l in stdoutdata.decode(encoding).split('\n'):
+            m = devregexp.match(l)
+            if m:
+                dev = m.group(1)
+                flags = m.group(2).split(',')
+
+                if not ('UP' in flags and 'LOWER_UP' in flags):
+                    dev = None
+
+            m = ipv4regexp.match(l)
+            if m and dev:
+                yield(m.group(1), 4, dev)
+
+            m = ipv6regexp.match(l)
+            if m and dev:
+                yield(m.group(1), 6, dev)
+
+
+
+def get_dev_ipaddr(ifaces=None):
+    """
+        in devconf = ["eth0", "tap1", "br0"]
+        return [(str address, int ipversion)]
+    """
+
+    def filter_dev(fltr, dev):
+        if dev == 'lo':
+            return False
+
+        if dev in fltr:
+            return True
+        if ('-%s' % dev) in fltr:
+            return False
+        if '*' in fltr:
+            return True
+
+        return False
+
+
+    if ifaces:
+        if type(ifaces) is str:
+            dev_list = [ifaces]
         else:
-            c = [config.bin_ip, 'address', 'show']
+            dev_list = ifaces
+    else:
+        dev_list = ['*']
 
-        p=subprocess.Popen(c, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        (stdoutdata, stderrdata)=p.communicate()
-
-        if stdoutdata:
-            for l in stdoutdata.decode(encoding).split('\n'):
-                m = ipv4regexp.match(l)
-                if m:
-                    yield(m.group(1), 4)
-
-                m = ipv6regexp.match(l)
-                if m:
-                    yield(m.group(1), 6)
+    for addr, ipv, dev in run_ipaddr():
+        d("considering IP address %s (IPv%d) from interface %s" % (addr, ipv, dev))
+        if filter_dev(dev_list, dev):
+            d("    -> allowed by interface filter")
+            yield (addr,ipv)
+        else:
+            d("    -> denied by interface filter")
 
 
 def measure_ipv4(ipv4addr):
@@ -170,6 +212,7 @@ def get_host_ipaddr(devs, enable_ipv4, enable_ipv6):
         else:
             raise Exception("Wrong protocol: %d" % proto)
 
+    d("Sort IP addresses")
     ipv4 = sorted(ipv4list, key=measure_ipv4, reverse=True)
     ipv6 = sorted(ipv6list, key=measure_ipv6, reverse=True)
 
@@ -200,7 +243,7 @@ def query_dns():
         else:
             raise Exception("Unknown qtype: %s" % str(qtype))
                 
-        c=[config.bin_dig, '@%s' % config.dns_server, name, qtype]
+        c=[config['bin_dig'], '@%s' % config['dns_server'], name, qtype]
         dig=subprocess.Popen(c,stdout=subprocess.PIPE)
         d("Running command: %s" % str(c))
         r=dig.communicate()
@@ -212,36 +255,36 @@ def query_dns():
                 if m and addrregexp.match(m.group(1)):
                     return m.group(1)
  
-    dnsname = normalize_dns("%s.%s" % (config.hostname, config.dns_zone))
+    dnsname = normalize_dns("%s.%s" % (config['hostname'], config['dns_zone']))
     return(q(dnsname,'A'), q(dnsname,'AAAA'))
 
 
 def update_dns(ipv4=None, ipv6=None):
-        dnsname = normalize_dns("%s.%s" % (config.hostname, config.dns_zone))
-        commands = """server %s
+    dnsname = normalize_dns("%s.%s" % (config['hostname'], config['dns_zone']))
+    commands = """server %s
 zone %s
 update del %s
-""" % (config.dns_server, denormalize_dns(config.dns_zone), dnsname)
+""" % (config['dns_server'], denormalize_dns(config['dns_zone']), dnsname)
 
-        if ipv6:
-                commands += "update add %s %d AAAA %s\n" % (dnsname, config.rr_ttl, ipv6)
-        if ipv4:
-                commands += "update add %s %d A %s\n" % (dnsname, config.rr_ttl, ipv4)
+    if ipv6:
+        commands += "update add %s %d AAAA %s\n" % (dnsname, config['rr_ttl'], ipv6)
+    if ipv4:
+        commands += "update add %s %d A %s\n" % (dnsname, config['rr_ttl'], ipv4)
 
-        commands += "send\n"
+    commands += "send\n"
 
-        d("Running command %s -y <hidden>" % config.bin_nsupdate)
-        nsu=subprocess.Popen([config.bin_nsupdate, "-y", config.nsupdate_key],
-                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        d("Feeding data: \n%s---------------" % commands)
-        r=nsu.communicate(commands.encode(encoding))
-        d("Update finished. Return code: %d. Output: %s" % (nsu.returncode, str(r)))
+    d("Running command %s -y <hidden>" % config['bin_nsupdate'])
+    nsu=subprocess.Popen([config['bin_nsupdate'], "-y", config['nsupdate_key']],
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    d("Feeding data: \n%s---------------" % commands)
+    r=nsu.communicate(commands.encode(encoding))
+    d("Update finished. Return code: %d. Output: %s" % (nsu.returncode, str(r)))
 
 
 def main():
-        global debug
+    global config, config_file
 
-        def usage():
+    def usage():
                 print("""reportip.py by Tomas Hlavacek (tmshlvck@gmail.com)
   -d --debug : sets debugging output
   -h --help : prints this help message
@@ -249,60 +292,71 @@ def main():
   -f --force : force update
 """)
 
-        try:
-                opts, args = getopt.getopt(sys.argv[1:], "hdqf", ["help", "debug", "query", "force"])
-        except getopt.GetoptError as err:
-                print(str(err))
-                usage()
-                sys.exit(2)
+    try:
+        opts, args = getopt.getopt(sys.argv[1:], "hc:dqf", ["help", "config=", "debug", "query", "force"])
+    except getopt.GetoptError as err:
+        print(str(err))
+        usage()
+        sys.exit(2)
 
-        force_update = False
-        for o, a in opts:
-                if o == '-d':
-                        debug = 1
-                elif o == '-h':
-                        usage()
-                        sys.exit(0)
-                elif o == '-q':
-                    print("Hostname: %s, zone: %s, DNS server: %s" % (config.hostname, config.dns_zone, config.dns_server))
-                    (ipv4,ipv6) = get_host_ipaddr(config.interfaces, config.enable_ipv4, config.enable_ipv6)
-                    print("Local addresses: IPv4 %s, IPv6 %s" % (str(ipv4), str(ipv6)))
-                    (dns_ipv4,dns_ipv6) = query_dns()
-                    print("Addresses in DNS: IPv4 %s, IPv6 %s" % (str(dns_ipv4), str(dns_ipv6)))
-                    return
+    force_update = False
+    query = False
+    for o, a in opts:
+        if o == '-d':
+            config['debug'] = True
+        elif o == '-h':
+            usage()
+            sys.exit(0)
+        elif o == '-q':
+            query = True
+        elif o == '-f':
+            force_update = True
 
-                elif o == '-f':
-                    force_update = True
+        elif o == '-c':
+            config_file = a
 
-                else:
-                    assert False, "Unhandled option"
-
-
-        if config.sleep:
-                d("Sleeping for %d s." % config.sleep)
-                time.sleep(config.sleep)
-                d("Waking up...")
-
-        # report addresses
-        (ipv4,ipv6) = get_host_ipaddr(config.interfaces, config.enable_ipv4, config.enable_ipv6)
-        d("Local addresses: IPv4 %s, IPv6 %s" % (str(ipv4), str(ipv6)))
-        if ipv4 == None and ipv6 == None:
-            d("No connectivity, nothing to report. Noop. Finish.")
-            return
-
-        (dns_ipv4,dns_ipv6) = query_dns()
-        d("Addresses in DNS: IPv4 %s, IPv6 %s" % (str(dns_ipv4), str(dns_ipv6)))
-
-        if ipv4 != dns_ipv4 or ipv6 != dns_ipv6 or force_update:
-            d("Difference in local address and DNS. Sending update.")
-            update_dns(ipv4, ipv6)
         else:
-            d("No difference in local address and DNS. Noop.")
+            assert False, "Unhandled option"
 
-        d("Finish.")
+    read_config(config_file)
+
+    # query only and stop
+    if query:
+        print("Hostname: %s, zone: %s, DNS server: %s" % (config['hostname'], config['dns_zone'], config['dns_server']))
+        (ipv4,ipv6) = get_host_ipaddr(config['interfaces'], config['enable_ipv4'], config['enable_ipv6'])
+        print("Local addresses: IPv4 %s, IPv6 %s" % (str(ipv4), str(ipv6)))
+        (dns_ipv4,dns_ipv6) = query_dns()
+        print("Addresses in DNS: IPv4 %s, IPv6 %s" % (str(dns_ipv4), str(dns_ipv6)))
+        return
+
+    # sleep before proceeding
+    if config['sleep']:
+        d("Sleeping for %d s." % config['sleep'])
+        time.sleep(config['sleep'])
+        d("Waking up...")
+
+    # select addresses
+    (ipv4,ipv6) = get_host_ipaddr(config['interfaces'], config['enable_ipv4'], config['enable_ipv6'])
+    d("Local addresses: IPv4 %s, IPv6 %s" % (str(ipv4), str(ipv6)))
+    if ipv4 == None and ipv6 == None:
+        d("No connectivity, nothing to report. Noop. Finish.")
+        return
+
+    # query DNS
+    (dns_ipv4,dns_ipv6) = query_dns()
+    d("Addresses in DNS: IPv4 %s, IPv6 %s" % (str(dns_ipv4), str(dns_ipv6)))
+
+    # if DNS differs from local address send update
+    if ipv4 != dns_ipv4 or ipv6 != dns_ipv6 or force_update:
+        d("Difference in local address and DNS. Sending update.")
+        update_dns(ipv4, ipv6)
+    else:
+        d("No difference in local address and DNS. Noop.")
+
+    d("Finish.")
 
          
 
 if __name__ == '__main__':
-        main()
+    main()
 
