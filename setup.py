@@ -12,7 +12,7 @@ setup(name='ddns',
         'pyyaml',
         ],
     scripts = [
-        'reportip.py',
+        'ddns-reportip.py',
         ],
    )
 
