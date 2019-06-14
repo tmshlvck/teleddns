@@ -1,8 +1,9 @@
 #!/bin/bash
 
 add_cron () {
+	# $1 = prefix for the installed binary
 	crontab -l > /tmp/ct.txt
-	echo "*/39 *  * * *   root    /usr/bin/ddns-reportip.py >>/var/log/dnsupdate.log" >> /tmp/ct.txt
+	echo "*/39 *  * * *   root    $1/ddns-reportip.py >>/var/log/dnsupdate.log" >> /tmp/ct.txt
 	crontab /tmp/ct.txt
 	rm /tmp/ct.txt
 }
@@ -15,19 +16,21 @@ install_common () {
 		cp ddns.yaml /etc/ddns/
 	fi
 
-	cp 99dnsupdate /etc/NetworkManager/dispatcher.d/
+	if [ -d /etc/NetworkManager/dispatcher.d/ ]; then
+		cp 99dnsupdate /etc/NetworkManager/dispatcher.d/
+	fi
 }
 
 deploy_debian () {
-	apt-get -y install python3-yaml dnsutils
+	apt-get -y install python3-yaml python3-setuptools dnsutils
 	install_common
-	add_cron
+	add_cron /usr/local/bin
 }
 
 deploy_arch () {
-	pikaur -Suy python-yaml bind-tools
+	pikaur -Suy python-yaml python-setuptools bind-tools
 	install_common
-	add_cron
+	add_cron /usr/bin
 }
 
 if [ -f /etc/debian_version ]; then
@@ -39,3 +42,4 @@ if [ -f /etc/arch-release ]; then
 	deploy_arch
 	exit 0
 fi
+
