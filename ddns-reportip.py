@@ -46,7 +46,7 @@ def log(message):
 
 def read_config(cfgfile):
     global config
-    config.update(yaml.load(open(cfgfile, 'r')))
+    config.update(yaml.safe_load(open(cfgfile, 'r')))
 
 
 def run_ipaddr(dev=None):
