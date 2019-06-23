@@ -55,7 +55,7 @@ deploy_debian () {
 
 deploy_arch () {
 	clean
-#	pikaur -Suy python-yaml python-setuptools bind-tools
+	pikaur -Suy --needed python-yaml python-setuptools bind-tools
 	install_common
 
 	BF=`which ddns-reportip.py`
