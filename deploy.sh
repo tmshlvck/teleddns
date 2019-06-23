@@ -7,7 +7,7 @@ add_cron () {
 		echo "crontab already contains the ddns integration. Skipping."
 	else
 		echo "installing new record into crontab..."
-		echo "*/39 *  * * *   root    $1 >>/var/log/dnsupdate.log" >>/tmp/ct.txt
+		echo "*/30 *  * * *   root    $1" >>/tmp/ct.txt
 		crontab /tmp/ct.txt
 	fi
 	rm /tmp/ct.txt

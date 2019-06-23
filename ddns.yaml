@@ -7,7 +7,7 @@
 sleep: 4
 # add some time when using the script with network manager
 
-debug: 1
+debug: 0
 
 bin_nsupdate: '/usr/bin/nsupdate'
 bin_dig: '/usr/bin/dig'
