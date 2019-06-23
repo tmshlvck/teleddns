@@ -7,5 +7,5 @@ STATUS=$2
 
 
 if [ "$STATUS" = "up" ]; then
-	$BIN_NOHUP /usr/local/sbin/reportip.py >> /var/log/dnsupdate.log
+	$BIN_NOHUP DDNS_REPORTIP_PY >> /var/log/dnsupdate.log
 fi
