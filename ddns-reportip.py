@@ -301,9 +301,10 @@ def main():
 
     force_update = False
     query = False
+    debug_cmdln = False
     for o, a in opts:
         if o == '-d':
-            config['debug'] = True
+            debug_cmdln = True
         elif o == '-h':
             usage()
             sys.exit(0)
@@ -319,6 +320,8 @@ def main():
             assert False, "Unhandled option"
 
     read_config(config_file)
+    if debug_cmdln:
+        config['debug'] = True
 
     # query only and stop
     if query:
