@@ -50,7 +50,7 @@ def read_config(cfgfile):
 
 
 def run_ipaddr(dev=None):
-    devregexp=re.compile(r'^\s*[0-9]+:\s+([0-9a-zA-Z]+)(:\s+|@[^\s]+\s+)<([^>]+)>')
+    devregexp=re.compile(r'^\s*[0-9]+:\s+([0-9a-zA-Z]+)(:|@.+)\s+<([^>]+)>')
     ipv4regexp=re.compile(r'^\s+inet\s+(([0-9]{1,3}\.){3}[0-9]{1,3})(/[0-9]{1,2})?\s+')
     ipv6regexp=re.compile(r'^\s+inet6\s+(([0-9a-fA-F]{0,4}:){0,7}[0-9a-fA-F]{0,4})/[0-9]{1,3}\s+')
 
