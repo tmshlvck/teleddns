@@ -30,8 +30,6 @@ import yaml
 config_file = '/etc/ddns/ddns.yaml'
 config = {'debug': False,}
 
-encoding = 'utf-8'
-
 def d(message):
     if config['debug']:
         print(message)
@@ -51,8 +49,8 @@ def read_config(cfgfile):
 
 def run_ipaddr(dev=None):
     devregexp=re.compile(r'^\s*[0-9]+:\s+([0-9a-zA-Z]+)(:|@.+)\s+<([^>]+)>')
-    ipv4regexp=re.compile(r'^\s+inet\s+(([0-9]{1,3}\.){3}[0-9]{1,3})(/[0-9]{1,2})?\s+')
-    ipv6regexp=re.compile(r'^\s+inet6\s+(([0-9a-fA-F]{0,4}:){0,7}[0-9a-fA-F]{0,4})/[0-9]{1,3}\s+')
+    ipv4regexp=re.compile(r'^\s+inet\s+(([0-9]{1,3}\.){3}[0-9]{1,3})(/[0-9]{1,2})?\s+(.+)$')
+    ipv6regexp=re.compile(r'^\s+inet6\s+(([0-9a-fA-F]{0,4}:){0,7}[0-9a-fA-F]{0,4})/[0-9]{1,3}\s+(.+)$')
 
     if dev:
         c = [config['bin_ip'], 'address', 'show', 'dev', dev]
@@ -64,7 +62,7 @@ def run_ipaddr(dev=None):
 
     if stdoutdata:
         dev = None
-        for l in stdoutdata.decode(encoding).split('\n'):
+        for l in stdoutdata.decode().split('\n'):
             m = devregexp.match(l)
             if m:
                 dev = m.group(1)
@@ -75,18 +73,18 @@ def run_ipaddr(dev=None):
 
             m = ipv4regexp.match(l)
             if m and dev:
-                yield(m.group(1), 4, dev)
+                yield(m.group(1), 4, dev, m.group(4).strip().split(' '))
 
             m = ipv6regexp.match(l)
             if m and dev:
-                yield(m.group(1), 6, dev)
+                yield(m.group(1), 6, dev, m.group(3).strip().split(' '))
 
 
 
 def get_dev_ipaddr(ifaces=None):
     """
         in ifaces = ["eth0", "tap1", "br0"]
-        return [(str address, int ipversion)]
+        return [(str address, int ipversion, str dev, [str flag,...])]
     """
 
     def filter_dev(fltr, dev):
@@ -111,16 +109,16 @@ def get_dev_ipaddr(ifaces=None):
     else:
         dev_list = ['*']
 
-    for addr, ipv, dev in run_ipaddr():
-        d("considering IP address %s (IPv%d) from interface %s" % (addr, ipv, dev))
+    for addr, ipv, dev, flags in run_ipaddr():
+        d(f"considering IP address {addr} (IPv{ipv}) from interface {dev} with flags {str(flags)}")
         if filter_dev(dev_list, dev):
             d("    -> allowed by interface filter")
-            yield (addr,ipv)
+            yield (addr, ipv, dev, flags)
         else:
             d("    -> denied by interface filter")
 
 
-def measure_ipv4(ipv4addr):
+def measure_ipv4(ipv4addr, flags):
     try:
         ipo = ipaddress.IPv4Address(ipv4addr)
     except:
@@ -151,7 +149,7 @@ def measure_ipv4(ipv4addr):
     return 1
 
 
-def measure_ipv6(ipv6addr):
+def measure_ipv6(ipv6addr, flags):
     def is_eui64(ipa):
         if ipa.packed[11] == 0xff and ipa.packed[12] == 0xfe:
             return True
@@ -187,6 +185,9 @@ def measure_ipv6(ipv6addr):
         return 0
     if is_eui64(ipo):
         d("  -> EUI64")
+        return 3
+    if 'mngtmpaddr' in flags:
+        d("  -> stable privacy")
         return 2
 
     d("  -> global_unicast")
@@ -201,22 +202,28 @@ def get_host_ipaddr(devs, enable_ipv4, enable_ipv6):
     return ([str IPv4],[str IPv6]), str = IP addresses
     """
 
-    ipv4list = []
-    ipv6list = []
+    ipv4 = None
+    ipv4metric = 0
+    ipv6 = None
+    ipv6metric = 0
 
-    for addr,proto in get_dev_ipaddr(devs):
+    for addr,proto,dev,flags in get_dev_ipaddr(devs):
         if proto == 4:
-            ipv4list.append(addr)
+          if enable_ipv4:
+            m = measure_ipv4(addr, flags)
+            if m > 0 and m > ipv4metric:
+              ipv4 = addr
+              ipv4metric = m
         elif proto == 6:
-            ipv6list.append(addr)
+          if enable_ipv6:
+            m = measure_ipv6(addr, flags)
+            if m > 0 and m > ipv6metric:
+              ipv6 = addr
+              ipv6metric = m
         else:
             raise Exception("Wrong protocol: %d" % proto)
 
-    d("Sort IP addresses")
-    ipv4 = sorted(ipv4list, key=measure_ipv4, reverse=True)
-    ipv6 = sorted(ipv6list, key=measure_ipv6, reverse=True)
-
-    return (ipv4[0] if enable_ipv4 and ipv4 and measure_ipv4(ipv4[0]) > 0 else None, ipv6[0] if enable_ipv6 and ipv6 and measure_ipv6(ipv6[0]) > 0 else None)
+    return (ipv4, ipv6)
 
 
 def normalize_dns(name):
@@ -250,7 +257,7 @@ def query_dns():
         d("Command finished. Returncode: %d. Output: %s" % (dig.returncode, str(r)))
 
         if r and r[0]:
-            for l in r[0].decode(encoding).split('\n'):
+            for l in r[0].decode().split('\n'):
                 m = regexpc.match(l)
                 if m and addrregexp.match(m.group(1)):
                     return m.group(1)
@@ -277,7 +284,7 @@ update del %s
     nsu=subprocess.Popen([config['bin_nsupdate'], "-y", config['nsupdate_key']],
                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     d("Feeding data: \n%s---------------" % commands)
-    r=nsu.communicate(commands.encode(encoding))
+    r=nsu.communicate(commands.encode())
     d("Update finished. Return code: %d. Output: %s" % (nsu.returncode, str(r)))
 
 
