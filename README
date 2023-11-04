@@ -52,13 +52,26 @@ zone:
     file: "/var/lib/knot/d.domain.cz.zone"
     acl: acl_update_d_domain
 
-4) Fill TSIG password to the server & client config. Move the reportipconf.py to /etc/ddns/
+4) On the client run
+```
+wget https://raw.githubusercontent.com/tmshlvck/ddns/master/deploy.sh
+chmod a+x deploy.sh
+./deploy.sh <hostname> <domain> <server> '<TSIG KEY>'
+```
+i.e.
+```
+./deploy.sh eagle d.taaa.eu krtek.taaa.eu 'hmac-sha256:key_d:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx='
+```
 
-5) Start Knot and test the reportip.py on the client. Move the reportip.py to /usr/local/sbin/ .
+Alternative manual procedure: 
 
-6) (Optional for NetworkManager) Put the file 99dnsupdate into /etc/NetworkManager/dispatcher.d/ and make it executable.
+4a) Fill TSIG password to the server & client config. Move the reportipconf.py to /etc/ddns/
 
-7) (Optional) Put the following line to /etc/crontab
+5a) Start Knot and test the reportip.py on the client. Move the reportip.py to /usr/local/sbin/ .
+
+6a) (Optional for NetworkManager) Put the file 99dnsupdate into /etc/NetworkManager/dispatcher.d/ and make it executable.
+
+7a) (Optional) Put the following line to /etc/crontab
 
 */39 *  * * *   root    /usr/local/sbin/reportip.py >>/var/log/dnsupdate.log
 
