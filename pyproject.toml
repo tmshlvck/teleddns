@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "ddnsm"
+version = "0.1.0"
+description = ""
+authors = ["Tomas Hlavacek <tmshlvck@gmail.com>"]
+license = "GPL-3.0-or-later"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.6"
+click = "*"
+requests = "*"
+passlib = "*"
+pyyaml = "*"
+pyroute2 = "*"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+ddnsm = "ddnsm:main"
