@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
-# DDNSM
-# (C) 2015-2023 Tomas Hlavacek (tmshlvck@gmail.com)
+# TeleDDNS
+# (C) 2015-2024 Tomas Hlavacek (tmshlvck@gmail.com)
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -24,6 +24,7 @@ import time
 import ipaddress
 import requests
 import threading
+import os
 
 from typing import List, Iterator, Tuple
 
@@ -255,15 +256,16 @@ def ddns_client_loop(config, min_period=60, force_refresh_period=3600):
         since_refresh += min_period
 
 
-DEFAULT_CONFIG='/etc/ddnsm/ddnsm.yaml'
+DEFAULT_CONFIG='/etc/teleddns/teleddns.yaml'
 
 @click.command()
-@click.option('-c', '--config', 'config_file', default=DEFAULT_CONFIG, help=f'DDNSM config file ({DEFAULT_CONFIG})')
+@click.option('-c', '--config', 'config_file', default=os.environ.get('TELEDDNS_CONFIG',DEFAULT_CONFIG),
+              help=f"override TELEDDNS_CONFIG env or defult {DEFAULT_CONFIG}")
 @click.option('-d', '--debug', 'debug', is_flag=True, help='Enable debugging output.')
 @click.option('-n', '--noexit', 'daemon', is_flag=True, help='Run in loop and keep wating for new IPs. Best for systemd simple service.')
 @click.option('-h', '--hash', 'hash', help="Hash password and exit.")
 def main(config_file, debug, daemon, hash):
-    """DDNSM client that can become a daemon."""
+    """TeleDDNS client that can become a daemon."""
     
     if hash:
         from passlib.context import CryptContext
