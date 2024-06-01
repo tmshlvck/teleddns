@@ -1,22 +1,23 @@
 [tool.poetry]
-name = "ddnsm"
+name = "teleddns"
 version = "0.1.0"
-description = ""
+description = "Telephant Linux DDNS client"
 authors = ["Tomas Hlavacek <tmshlvck@gmail.com>"]
 license = "GPL-3.0-or-later"
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.6"
-click = "*"
-requests = "*"
-passlib = "*"
-pyyaml = "*"
-pyroute2 = "*"
+python = "^3.9"
+pyroute2 = "^0.7.12"
+pyyaml = "^6.0.1"
+requests = "^2.32.3"
+passlib = "^1.7.4"
+click = "^8.1.7"
+
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.scripts]
-ddnsm = "ddnsm:main"
+teleddns = "teleddns:main"

@@ -1,10 +1,10 @@
 [Unit]
-Description=ddnsm systemd service
+Description=teleddns systemd service
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/ddnsm -n
+ExecStart=/usr/local/bin/teleddns -n
 Restart=always
 
 [Install]

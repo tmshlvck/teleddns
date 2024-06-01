@@ -20,7 +20,6 @@ import click
 import sys
 import logging
 import yaml
-import requests
 import time
 import ipaddress
 import requests
