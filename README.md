@@ -8,6 +8,14 @@ to minimize both the DDNS convergence time and resource usage.
 
 ## Installation
 
+### TL;DR
+
+```
+curl -s -L https://raw.githubusercontent.com/tmshlvck/teleddns/master/deploy.sh | bash -s <URL> <domainname>"
+```
+
+Where URL is the API URL including the username and password in `https://user:pass@host.domain.tld/ddns/update` form and domainname is the FQDN of the host (example: `testhost.d.telephant.eu`).
+
 ### Requirements / prerequisities
 
 * Fairly recent Linux - say Ubuntu 20.04 or similar
