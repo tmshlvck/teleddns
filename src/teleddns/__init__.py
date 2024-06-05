@@ -26,7 +26,7 @@ import requests
 import threading
 import os
 
-from typing import List, Iterator, Tuple
+from typing import List, Iterator, Tuple, Union
 
 from pyroute2 import NDB
 from pyroute2 import IPRSocket,IPRoute
@@ -35,7 +35,7 @@ from pyroute2.netlink.rtnl.ifinfmsg import IFF_LOWER_UP, IFF_UP, IFF_RUNNING
 from pyroute2.netlink.rtnl import RTMGRP_IPV4_IFADDR, RTMGRP_IPV6_IFADDR, RTMGRP_LINK
 
 
-def get_netlink_addrs() -> Iterator[Tuple[ipaddress.IPv4Address|ipaddress.IPv6Address, str, int, bool]]:
+def get_netlink_addrs() -> Iterator[Tuple[Union[ipaddress.IPv4Address, ipaddress.IPv6Address], str, int, bool]]:
     """ query netlink rtnl for addresses, interfaces and associated flags and state
         return generator of tuples (ipaddress.IPv4|6Address, iface_name: str, ifa_flags: int, is_running: bool)
     """
@@ -136,7 +136,7 @@ def measure_ipv6(ipv6addr, ifa_flags):
     return 1
 
 
-def get_host_ipaddr(iface_filter: str | List[str], enable_ipv4: bool, enable_ipv6: bool):
+def get_host_ipaddr(iface_filter: Union[str, List[str]], enable_ipv4: bool, enable_ipv6: bool):
     """
     iface_filter - None or list of str or str; str = name of interface(s)
     enable_ipv4 - boot = include IPv4 addresses in the result
