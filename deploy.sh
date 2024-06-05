@@ -45,7 +45,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/teleddns -n
+ExecStart=`command -v teleddns` -n
 Restart=always
 
 [Install]
