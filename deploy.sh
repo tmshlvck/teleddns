@@ -8,18 +8,18 @@ fi
 DDNSURL="$1"
 DDNSNAME="$2"
 
-if which apt-get >/dev/null 2>&1; then
+if command -v apt-get >/dev/null 2>&1; then
     echo "Detected Debian-based distro"
     sudo apt-get update
     sudo apt-get -y install python3-pip
 fi
 
-if which dnf >/dev/null 2>&1; then
+if command -v dnf >/dev/null 2>&1; then
     echo "Detected Fedora-based distro"
     sudo dnf -y install python3-pip
 fi
 
-if which pacman >/dev/null 2>&1; then
+if command -v pacman >/dev/null 2>&1; then
     echo "Detected Arch-based distro"
     sudo pacman --noconfirm -S python-pip
 fi
