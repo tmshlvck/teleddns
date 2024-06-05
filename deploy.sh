@@ -19,6 +19,11 @@ if which dnf >/dev/null 2>&1; then
     sudo dnf -y install python3-pip
 fi
 
+if which pacman >/dev/null 2>&1; then
+    echo "Detected Arch-based distro"
+    sudo pacman --noconfirm -S python-pip
+fi
+
 sudo PIP_BREAK_SYSTEM_PACKAGES=1 pip install teleddns
 sudo mkdir -p /etc/teleddns/
 sudo bash -c "cat << EOF > /etc/teleddns/teleddns.yaml
