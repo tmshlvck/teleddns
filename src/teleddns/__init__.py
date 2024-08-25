@@ -25,6 +25,7 @@ import ipaddress
 import requests
 import threading
 import os
+import json
 
 from typing import List, Iterator, Tuple, Union
 
@@ -195,15 +196,24 @@ def get_host_ipaddr(iface_filter: Union[str, List[str]], enable_ipv4: bool, enab
     return (best_ipv4, best_ipv6, known_addrs)
 
 
+def get_result(response):
+    if response.headers.get('Content-Type').startswith('application/json'):
+        try:
+            return response.json()
+        except json.decoder.JSONDecodeError:
+            return response.content
+    else:
+        return response.content
+
 def update_ddns(api_url, hostname, myip):
     logging.debug(f"Executing update with hostname {hostname} and myip {myip}")
     try:
         response = requests.get(api_url, params={'hostname': hostname, 'myip': myip})
         if response.status_code == 200:
-            logging.debug(f"Received response code: {response.status_code} result: {response.json()}")
+            logging.debug(f"Succeeded with response code: {response.status_code} result: {str(get_result(response))}")
             return True
         else:
-            logging.error(f"Received response code: {response.status_code} result: {response.json()}")
+            logging.error(f"Failed with response code: {response.status_code} result: {str(get_result(response))}")
             return False
     except Exception as e:
         logging.exception("DDNS update failed:")
