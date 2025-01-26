@@ -11,20 +11,21 @@ DDNSNAME="$2"
 if command -v apt-get >/dev/null 2>&1; then
     echo "Detected Debian-based distro"
     sudo apt-get update
-    sudo apt-get -y install python3-pip
+    sudo apt-get -y install cargo
 fi
 
 if command -v dnf >/dev/null 2>&1; then
     echo "Detected Fedora-based distro"
-    sudo dnf -y install python3-pip
+    sudo dnf -y install cargo
 fi
 
 if command -v pacman >/dev/null 2>&1; then
     echo "Detected Arch-based distro"
-    sudo pacman --noconfirm -S python-pip
+    sudo pacman --noconfirm -S cargo
 fi
 
-sudo PIP_BREAK_SYSTEM_PACKAGES=1 pip install teleddns
+sudo cargo build
+sudo cargo install --path . --locked --root /usr/local/bin
 sudo mkdir -p /etc/teleddns/
 sudo bash -c "cat << EOF > /etc/teleddns/teleddns.yaml
 ---

@@ -1,0 +1,38 @@
+[package]
+name = "teleddns"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+futures = "0.3.11"
+log = "0.4.8"
+thiserror = "1"
+netlink-sys = { version = "0.8" }
+netlink-packet-utils = { version = "0.5" }
+netlink-packet-route = { version = "0.19" }
+netlink-packet-core = { version = "0.7" }
+netlink-proto = { default-features = false, version = "0.11" }
+nix = { version = "0.27.1", default-features = false, features = [
+    "fs",
+    "mount",
+    "sched",
+    "signal",
+] }
+tokio = { version = "1.40.0", features = ["full"] }
+async-global-executor = { version = "2.0.2" }
+rtnetlink = "0.14.1"
+serde = "1.0.215"
+serde_derive = "1.0.215"
+clap = { version = "4.5.21", features = ["derive"] }
+serde_yaml = "0.9.34"
+clap-verbosity-flag = "3.0.0"
+env_logger = "0.10.0"
+reqwest = "0.12.12"
+http = "1.2.0"
+async-process = "2.3.0"
+
+[dev-dependencies]
+env_logger = "0.10.0"
+ipnetwork = "0.18.0"
+async-std = { version = "1.9.0", features = ["attributes"] }
+macaddr = "1.0"

@@ -1,5 +1,1 @@
-dist/
-__pycache__/
-*.py[cod]
-*$py.class
-poetry.lock
+/target
