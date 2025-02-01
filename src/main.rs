@@ -1,3 +1,20 @@
+/*
+TeleDDNS
+(C) 2015-2025 Tomas Hlavacek (tmshlvck@gmail.com)
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
 
 use log::{debug, info, warn, error};
 use netlink_packet_route::address::AddressHeader;
@@ -216,7 +233,7 @@ async fn get_iface_addrs(handle: &Handle, conf: &Config) -> HashMap<IfaceIpAddr,
     ifaddrs
 }
 
-async fn recv_netlink_events(tx: Sender<HashMap<IfaceIpAddr, IfaceIpAddrData>>, conf: Config) -> () {
+async fn recv_netlink_events(tx: Sender<HashMap<IfaceIpAddr, IfaceIpAddrData>>, conf: Config, oneshot: bool) -> () {
     let (mut conn, handle, mut messages) = new_connection().expect("Failed to make netlink connection. Check privileges.");
 
     let groups = RTNLGRP_LINK
@@ -232,7 +249,13 @@ async fn recv_netlink_events(tx: Sender<HashMap<IfaceIpAddr, IfaceIpAddrData>>, 
     tokio::spawn(conn);
 
     let mut iface_addrs_map = get_iface_addrs(&handle, &conf).await;
+    info!("Trigger the first update");
+    debug!("{:?}", iface_addrs_map);
     tx.send(iface_addrs_map.clone()).await.expect("Failed sending event over MPSC channel");
+
+    if oneshot {
+        return
+    }
 
     while let Some((nlmsg, _)) = messages.next().await {
         debug!("netlink recv: {:?}", nlmsg.payload);
@@ -244,17 +267,19 @@ async fn recv_netlink_events(tx: Sender<HashMap<IfaceIpAddr, IfaceIpAddrData>>, 
                         if iface_addrs_map.contains_key(&received_ifaceaddr) {
                             info!("NewAddress notify for already known addr: {} -> ignore", received_ifaceaddr);
                         } else {
-                            info!("NewAddress notify for uknown addr: {} -> update state", received_ifaceaddr);
+                            info!("NewAddress notify for uknown addr: {} -> trigger update", received_ifaceaddr);
 
                             iface_addrs_map = get_iface_addrs(&handle, &conf).await;
+                            debug!("{:?}", iface_addrs_map);
                             tx.send(iface_addrs_map.clone()).await.expect("Failed sending event over MPSC channel");
                         }
                     }
                 }
             },
             _ => {
-                info!("Other type notify -> update state");
+                info!("Other type notify -> trigger update");
                 iface_addrs_map = get_iface_addrs(&handle, &conf).await;
+                debug!("{:?}", iface_addrs_map);
                 tx.send(iface_addrs_map.clone()).await.expect("Failed sending event over MPSC channel");
             }
         }
@@ -364,9 +389,7 @@ async fn shell(cmd: &str) {
 }
 
 async fn write_nft_and_notify(new_state: &HashMap<IfaceIpAddr, IfaceIpAddrData>, conf: &Config) {
-    info!("In write_nft_and_notify: {:?}", &conf.hooks);
     if let Some(hooks) = conf.hooks.as_ref() {
-        info!("In write_nft_and_notify found hooks {:?}", hooks);
         for hook in hooks.iter() {
             info!("Woking on hook {:?}", hook);
             if let Some(outfile) = hook.nft_sets_outfile.as_ref() {
@@ -416,7 +439,7 @@ async fn send_ddns_update(ip: IpAddr, conf: &Config) -> Result<(), String> {
     }
 }
 
-async fn worker(mut rx: Receiver<HashMap<IfaceIpAddr, IfaceIpAddrData>>, conf: Config) {
+async fn worker(mut rx: Receiver<HashMap<IfaceIpAddr, IfaceIpAddrData>>, conf: Config, oneshot: bool) {
     let mut start = SystemTime::now();
     let mut current_state: Option<HashMap<IfaceIpAddr, IfaceIpAddrData>> = None;
     let mut current_best4 = None;
@@ -460,6 +483,10 @@ async fn worker(mut rx: Receiver<HashMap<IfaceIpAddr, IfaceIpAddrData>>, conf: C
         }
 
         start = SystemTime::now();
+
+        if oneshot {
+            return
+        }
     }
 }
 
@@ -495,10 +522,16 @@ struct Config {
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    #[arg(short, long, default_value_t = String::from("/etc/teleddns/teleddns.yaml"))]
+    /// Config file path
+    #[arg(short, long, default_value_t=String::from("/etc/teleddns/teleddns.yaml"))]
     config: String,
+
+    /// Do not deaemonize, run just one DDNS update & hooks.
+    #[arg(short, long, default_value_t=false)]
+    oneshot: bool,
+
     #[command(flatten)]
-    verbose: clap_verbosity_flag::Verbosity,
+    verbose: clap_verbosity_flag::Verbosity<clap_verbosity_flag::InfoLevel>,
 }
 
 #[tokio::main]
@@ -521,13 +554,17 @@ async fn main() {
     let mut jset = JoinSet::new();
     let (tx, rx) = mpsc::channel(10);
 
-    jset.spawn(worker(rx, conf.clone()));
-    jset.spawn(recv_netlink_events(tx, conf.clone()));
+    jset.spawn(worker(rx, conf.clone(), args.oneshot));
+    jset.spawn(recv_netlink_events(tx, conf.clone(), args.oneshot));
 
-    info!("Listener started, waiting for HUP");
-    signal(SignalKind::hangup()).expect("Failed to bind to HUP signal.").recv().await;
-    info!("Terminating on HUP.");
-    jset.shutdown().await;
+    if args.oneshot {
+        info!("Waiting for the operation to finish");
+    } else {
+        info!("Listener started, waiting for HUP");
+        signal(SignalKind::hangup()).expect("Failed to bind to HUP signal.").recv().await;
+        info!("Terminating on HUP.");
+        jset.shutdown().await;
+    }
 
     let mut output = Vec::new();
     while let Some(res) = jset.join_next().await{
@@ -537,6 +574,6 @@ async fn main() {
             Err(err) => panic!("{err}"),
         }
     }
-    warn!("Sucessfully shutdown");
+    info!("Sucessfully shutdown");
     std::process::exit(0);
 }
