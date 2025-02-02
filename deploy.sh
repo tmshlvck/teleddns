@@ -11,12 +11,12 @@ DDNSNAME="$2"
 if command -v apt-get >/dev/null 2>&1; then
     echo "Detected Debian-based distro"
     sudo apt-get update
-    sudo apt-get -y install cargo
+    sudo apt-get -y install cargo libssl-dev
 fi
 
 if command -v dnf >/dev/null 2>&1; then
     echo "Detected Fedora-based distro"
-    sudo dnf -y install cargo
+    sudo dnf -y install cargo openssl-devel
 fi
 
 if command -v pacman >/dev/null 2>&1; then
@@ -25,7 +25,7 @@ if command -v pacman >/dev/null 2>&1; then
 fi
 
 sudo cargo build
-sudo cargo install --path . --locked --root /usr/local/bin
+sudo cargo install --path . --locked --root /usr/local
 sudo mkdir -p /etc/teleddns/
 sudo bash -c "cat << EOF > /etc/teleddns/teleddns.yaml
 ---
@@ -36,7 +36,10 @@ hostname: '$DDNSNAME'
 enable_ipv6: True
 enable_ipv4: False
 interfaces:
-        - '*'
+- '*'
+#hooks:
+#- nft_sets_outfile: "/etc/nftables.d/00-localnets.rules"
+#  shell: "nft -f /etc/nftables.conf"
 EOF"
 
 sudo bash -c "cat << EOF > /etc/systemd/system/teleddns.service
