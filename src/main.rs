@@ -18,7 +18,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use log::{debug, info, warn, error};
 use netlink_packet_route::address::AddressHeader;
-use netlink_packet_route::AddressFamily;
 use std::net::{IpAddr,Ipv4Addr,Ipv6Addr};
 use tokio::task::JoinSet;
 use tokio::signal::unix::{signal, SignalKind};
@@ -46,8 +45,8 @@ const MIN_UPDATE_INTERVAL_S: u64 = 30;
 const RTNLGRP_LINK: u32 = 1;
 const RTNLGRP_IPV4_IFADDR: u32 = 1 << 4;
 const RTNLGRP_IPV6_IFADDR: u32 = 1 << 8;
-const RTNLGRP_IPV4_NETCONF: u32 = 1 << 23;
-const RTNLGRP_IPV6_NETCONF: u32 = 1 << 24;
+//const RTNLGRP_IPV4_NETCONF: u32 = 1 << 23;
+//const RTNLGRP_IPV6_NETCONF: u32 = 1 << 24;
 
 
 async fn nl_get_addrs(handle: &Handle) -> Result<Vec<(IpAddr, AddressHeader)>, Error> {
@@ -123,7 +122,10 @@ fn iface_bonus(iface: &str) -> u8 {
     }
 }
 
-fn flag_bonus(flags: &Vec<AddressHeaderFlag>) -> u8 {
+fn flag_bonus(_flags: &Vec<AddressHeaderFlag>) -> u8 {
+    // TBD
+    // this did not work because i.e. OpenVPN tunnels have permanent bonus
+    // while real interfaces have just SLAAC address which is however better:
     /*let mut b = 0;
     if flags.contains(&AddressHeaderFlag::Permanent) {
         b += 1;
@@ -402,6 +404,19 @@ async fn write_nft_and_notify(new_state: &HashMap<IfaceIpAddr, IfaceIpAddrData>,
     }
 }
 
+fn sanitize_url(url: &reqwest::Url) -> String {
+    let u = url.to_string();
+    let ps = u.match_indices(':').nth(1);
+    let pe = u.find('@');
+    
+    if let Some((psi,_)) = ps {
+        if let Some(pei) = pe {
+            return format!("{}:<PASSWORD>{}", &u[0..psi], &u[pei..])
+        }
+    }
+    u
+}
+
 async fn send_ddns_update(ip: IpAddr, conf: &Config) -> Result<(), String> {
     info!("Sending DDNS: {:?}", ip);
 
@@ -414,26 +429,27 @@ async fn send_ddns_update(ip: IpAddr, conf: &Config) -> Result<(), String> {
     ];
     let url = reqwest::Url::parse_with_params(&conf.ddns_url, &params)
         .expect(format!("Can not parse URL {} with params {:?}", &conf.ddns_url, &params).as_str());
-    match reqwest::get(url.clone()).await {
+    let sanitized_url = sanitize_url(&url);
+    match reqwest::get(url).await {
         Ok(res) => {
             let status = res.status();
             match status {
                 http::StatusCode::OK => {
                     let rtext = res.text().await;
                     info!("DDNS GET to URL {} succeeded with code: {}, text: {:?}",
-                        url, status, &rtext);
+                        sanitized_url, status, &rtext);
                     Ok(())
                 },
                 _ => {
                     let rtext = res.text().await;
                     warn!("DDNS GET to URL {} failed with code: {}, text: {:?}",
-                        url, status, &rtext);
+                        sanitized_url, status, &rtext);
                     Err(format!("Code: {}, text: {:?}", status, &rtext))
                 }
             }
         },
         Err(err) => {
-            warn!("DDNS GET to URL {} failed: {}", url, err);
+            warn!("DDNS GET to URL {} failed: {}", sanitized_url, err);
             Err(err.to_string())
         }
     }
@@ -558,7 +574,7 @@ async fn main() {
     jset.spawn(recv_netlink_events(tx, conf.clone(), args.oneshot));
 
     if args.oneshot {
-        info!("Waiting for the operation to finish");
+        info!("Main loop now waiting for the oneshot run to finish");
     } else {
         info!("Listener started, waiting for HUP");
         signal(SignalKind::hangup()).expect("Failed to bind to HUP signal.").recv().await;
