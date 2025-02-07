@@ -43,18 +43,14 @@ jobs:
     strategy:
       matrix:
         include:
-          - target: armv7-unknown-linux-gnueabi
-            os: ubuntu-latest
+          - target: armv7-unknown-linux-gnueabihf
+            os: ubuntu-22.04
             ubuntu_arch: armhf
           - target: riscv64gc-unknown-linux-gnu
             os: ubuntu-latest
             ubuntu_arch: riscv64
     runs-on: ${{ matrix.os }}
     steps:
-      #      - uses: ryankurte/action-apt@v0.5.0
-      #        with:
-      #          arch: ${{ matrix.ubuntu_arch }}
-      #          packages: "libssl-dev:${{ matrix.ubuntu_arch }}"
       - uses: actions/checkout@v4
       - uses: taiki-e/setup-cross-toolchain-action@v1
         with:
