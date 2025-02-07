@@ -51,10 +51,10 @@ jobs:
             ubuntu_arch: riscv64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: ryankurte/action-apt@v0.5.0
-        with:
-          arch: ${{ matrix.ubuntu_arch }}
-          packages: "libssl-dev:${{ matrix.ubuntu_arch }}"
+      #      - uses: ryankurte/action-apt@v0.5.0
+      #        with:
+      #          arch: ${{ matrix.ubuntu_arch }}
+      #          packages: "libssl-dev:${{ matrix.ubuntu_arch }}"
       - uses: actions/checkout@v4
       - uses: taiki-e/setup-cross-toolchain-action@v1
         with:
