@@ -20,7 +20,7 @@ jobs:
 
   upload-assets-amd64:
     needs: create-release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: taiki-e/upload-rust-binary-action@v1
@@ -28,27 +28,28 @@ jobs:
           bin: teleddns
           token: ${{ secrets.RELEASE_TOKEN }}
 
-  upload-assets-arm64:
-    needs: create-release
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v4
-      - uses: taiki-e/upload-rust-binary-action@v1
-        with:
-          bin: teleddns
-          token: ${{ secrets.RELEASE_TOKEN }}
+  ## This is too now -> glibc compatibility for Debian does not work
+  #upload-assets-arm64:
+  #  needs: create-release
+  #  runs-on: ubuntu-24.04-arm
+  #  steps:
+  #    - uses: actions/checkout@v4
+  #    - uses: taiki-e/upload-rust-binary-action@v1
+  #      with:
+  #        bin: teleddns
+  #        token: ${{ secrets.RELEASE_TOKEN }}
 
   upload-assets-multiarch:
     needs: create-release
     strategy:
       matrix:
         include:
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04
           - target: armv7-unknown-linux-gnueabihf
             os: ubuntu-22.04
-            ubuntu_arch: armhf
           - target: riscv64gc-unknown-linux-gnu
             os: ubuntu-latest
-            ubuntu_arch: riscv64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
