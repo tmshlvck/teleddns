@@ -267,9 +267,9 @@ async fn recv_netlink_events(tx: Sender<HashMap<IfaceIpAddr, IfaceIpAddrData>>, 
                     if let AddressAttribute::Address(addr) = attr {
                         let received_ifaceaddr = IfaceIpAddr {addr: addr.clone(), prefix_len: nladdrmsg.header.prefix_len};
                         if iface_addrs_map.contains_key(&received_ifaceaddr) {
-                            info!("NewAddress notify for already known addr: {} -> ignore", received_ifaceaddr);
+                            debug!("NewAddress notify for already known addr: {} -> ignore", received_ifaceaddr);
                         } else {
-                            info!("NewAddress notify for uknown addr: {} -> trigger update", received_ifaceaddr);
+                            debug!("NewAddress notify for uknown addr: {} -> trigger update", received_ifaceaddr);
 
                             iface_addrs_map = get_iface_addrs(&handle, &conf).await;
                             debug!("{:?}", iface_addrs_map);
@@ -279,7 +279,7 @@ async fn recv_netlink_events(tx: Sender<HashMap<IfaceIpAddr, IfaceIpAddrData>>, 
                 }
             },
             _ => {
-                info!("Other type notify -> trigger update");
+                debug!("Other type notify -> trigger update");
                 iface_addrs_map = get_iface_addrs(&handle, &conf).await;
                 debug!("{:?}", iface_addrs_map);
                 tx.send(iface_addrs_map.clone()).await.expect("Failed sending event over MPSC channel");
@@ -408,7 +408,7 @@ fn sanitize_url(url: &reqwest::Url) -> String {
     let u = url.to_string();
     let ps = u.match_indices(':').nth(1);
     let pe = u.find('@');
-    
+
     if let Some((psi,_)) = ps {
         if let Some(pei) = pe {
             return format!("{}:<PASSWORD>{}", &u[0..psi], &u[pei..])
@@ -475,7 +475,7 @@ async fn worker(mut rx: Receiver<HashMap<IfaceIpAddr, IfaceIpAddrData>>, conf: C
         }
 
         if new_state != current_state || current_state == None {
-            debug!("Detected state change -> Running update");
+            info!("Detected state change -> Running update");
 
             if let Some(new_state_data_ref) = new_state.as_ref() {
                 write_nft_and_notify(new_state_data_ref, &conf).await;
@@ -496,6 +496,8 @@ async fn worker(mut rx: Receiver<HashMap<IfaceIpAddr, IfaceIpAddrData>>, conf: C
             }
 
             current_state = new_state;
+        } else {
+            info!("No state change -> Nothing to update");
         }
 
         start = SystemTime::now();
@@ -562,6 +564,9 @@ async fn main() {
         None => { args.verbose.log_level_filter() }
     };
     env_logger::builder()
+        .format_timestamp(None)
+        .format_level(false)
+        .format_target(false)
         .filter_level(loglevel)
         .init();
     info!("Read config file {} finished", &args.config);
