@@ -1,45 +1,48 @@
 #!/bin/bash
 
-if (( $# != 3 )); then
-    echo "Usage:\ncurl -s -L https://raw.githubusercontent.com/tmshlvck/teleddns/master/deploy.sh | bash -s <URL> <domainname>"
-    echo "URL: DDNS API server URL\ndomainname: domain name (FQDN) to set"
+TELEDDNS_VERSION="v0.1.3"
+
+if (( $# != 2 )); then
+    echo -e "Usage:\ncurl -s -L https://raw.githubusercontent.com/tmshlvck/teleddns/master/deploy.sh | bash -s <URL> <domainname>"
+    echo -e "URL: DDNS API server URL\ndomainname: domain name (FQDN) to set"
+    exit -1
 fi
 
 DDNSURL="$1"
 DDNSNAME="$2"
 
-if command -v apt-get >/dev/null 2>&1; then
-    echo "Detected Debian-based distro"
-    sudo apt-get update
-    sudo apt-get -y install cargo libssl-dev
+if [ `uname -m` == "x86_64" ]; then
+    curl -o /tmp/teleddns.tar.gz -L "https://github.com/tmshlvck/teleddns/releases/download/$TELEDDNS_VERSION/teleddns-x86_64-unknown-linux-gnu.tar.gz"
+elif [ `uname -m` == "aarch64" ]; then
+    curl -o /tmp/teleddns.tar.gz -L "https://github.com/tmshlvck/teleddns/releases/download/$TELEDDNS_VERSION/teleddns-aarch64-unknown-linux-gnu.tar.gz"
+elif [ `uname -m` == "armv7l" ]; then
+    curl -o /tmp/teleddns.tar.gz -L "https://github.com/tmshlvck/teleddns/releases/download/$TELEDDNS_VERSION/teleddns-armv7-unknown-linux-gnueabihf.tar.gz"
+elif [ `uname -m` == "riscv64" ]; then
+    curl -o /tmp/teleddns.tar.gz -L "https://github.com/tmshlvck/teleddns/releases/download/$TELEDDNS_VERSION/teleddns-riscv64gc-unknown-linux-gnu.tar.gz"
+else
+    echo "Error: Unsupported architecture `uname -m`."
+    exit -1
 fi
 
-if command -v dnf >/dev/null 2>&1; then
-    echo "Detected Fedora-based distro"
-    sudo dnf -y install cargo openssl-devel
-fi
+sudo mkdir -p /usr/local/bin
+cd /usr/local/bin
+sudo tar xf /tmp/teleddns.tar.gz
+rm -f /tmp/teleddns.tar.gz
 
-if command -v pacman >/dev/null 2>&1; then
-    echo "Detected Arch-based distro"
-    sudo pacman --noconfirm -S cargo
-fi
-
-sudo cargo build
-sudo cargo install --path . --locked --root /usr/local
 sudo mkdir -p /etc/teleddns/
 sudo bash -c "cat << EOF > /etc/teleddns/teleddns.yaml
 ---
 debug: False
 
-ddns_url: '$DDNSURL'
-hostname: '$DDNSNAME'
+ddns_url: \"$DDNSURL\"
+hostname: \"$DDNSNAME\"
 enable_ipv6: True
 enable_ipv4: False
 interfaces:
 - '*'
 #hooks:
-#- nft_sets_outfile: "/etc/nftables.d/00-localnets.rules"
-#  shell: "nft -f /etc/nftables.conf"
+#- nft_sets_outfile: \"/etc/nftables.d/00-localnets.rules\"
+#  shell: \"nft -f /etc/nftables.conf\"
 EOF"
 
 sudo bash -c "cat << EOF > /etc/systemd/system/teleddns.service
@@ -49,15 +52,16 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=`command -v teleddns` -n
+ExecStart=/usr/local/bin/teleddns
 Restart=always
 
 [Install]
 WantedBy=multi-user.target
+
 EOF"
 
-systemctl daemon-reload
-systemctl enable teleddns.service
-systemctl restart teleddns.service
+sudo systemctl daemon-reload
+sudo systemctl enable teleddns.service
+sudo systemctl restart teleddns.service
 
 echo "Succesfully deployed teleddns with DDNS domain name: $DDNSNAME"
