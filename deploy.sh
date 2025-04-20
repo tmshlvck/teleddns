@@ -1,6 +1,7 @@
 #!/bin/bash
 
-TELEDDNS_VERSION="v0.1.3"
+SRC_GITHUB_API="https://api.github.com/repos/tmshlvck/teleddns/releases/latest"
+SRC_PREFIX="https://github.com/tmshlvck/teleddns/releases/download"
 
 if (( $# != 2 )); then
     echo -e "Usage:\ncurl -s -L https://raw.githubusercontent.com/tmshlvck/teleddns/master/deploy.sh | bash -s <URL> <domainname>"
@@ -11,16 +12,29 @@ fi
 DDNSURL="$1"
 DDNSNAME="$2"
 
+TELEDDNS_VERSION=`curl -s "$SRC_GITHUB_API" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/'`
+if ! echo "$TELEDDNS_VERSION" | grep -E "v[0-9\.]+"; then
+    echo "Failed to get latest version: $TELEDDNS_VERSION"
+    exit -1
+fi
+
 if [ `uname -m` == "x86_64" ]; then
-    curl -o /tmp/teleddns.tar.gz -L "https://github.com/tmshlvck/teleddns/releases/download/$TELEDDNS_VERSION/teleddns-x86_64-unknown-linux-gnu.tar.gz"
+    SRC="$SRC_PREFIX/$TELEDDNS_VERSION/teleddns-x86_64-unknown-linux-gnu.tar.gz"
 elif [ `uname -m` == "aarch64" ]; then
-    curl -o /tmp/teleddns.tar.gz -L "https://github.com/tmshlvck/teleddns/releases/download/$TELEDDNS_VERSION/teleddns-aarch64-unknown-linux-gnu.tar.gz"
+    SRC="$SRC_PREFIX/$TELEDDNS_VERSION/teleddns-aarch64-unknown-linux-gnu.tar.gz"
 elif [ `uname -m` == "armv7l" ]; then
-    curl -o /tmp/teleddns.tar.gz -L "https://github.com/tmshlvck/teleddns/releases/download/$TELEDDNS_VERSION/teleddns-armv7-unknown-linux-gnueabihf.tar.gz"
+    SRC="$SRC_PREFIX/$TELEDDNS_VERSION/teleddns-armv7-unknown-linux-gnueabihf.tar.gz"
 elif [ `uname -m` == "riscv64" ]; then
-    curl -o /tmp/teleddns.tar.gz -L "https://github.com/tmshlvck/teleddns/releases/download/$TELEDDNS_VERSION/teleddns-riscv64gc-unknown-linux-gnu.tar.gz"
+    SRC="$SRC_PREFIX/$TELEDDNS_VERSION/teleddns-riscv64gc-unknown-linux-gnu.tar.gz"
 else
     echo "Error: Unsupported architecture `uname -m`."
+    exit -1
+fi
+
+echo "Downloading $SRC ..."
+curl -o /tmp/teleddns.tar.gz -L $SRC
+if ! [ -f "/tmp/teleddns.tar.gz" ]; then
+    echo "Failed to download source archive. Halting..."
     exit -1
 fi
 
