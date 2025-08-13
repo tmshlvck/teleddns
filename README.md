@@ -52,6 +52,9 @@ enable_ipv6: True
 enable_ipv4: False
 interfaces:
 - '*'
+hooks:
+- nft_sets_outfile: "/etc/nftables.d/00-localnets.rules"
+  shell: "nft -f /etc/nftables.conf"
 
 EOF'
 ```
