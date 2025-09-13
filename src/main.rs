@@ -589,8 +589,8 @@ async fn send_ddns_update(ip: IpAddr, conf: &Config) -> Result<(), String> {
 async fn update_worker(mut rx: Receiver<HashMap<IfaceIpAddr, IfaceIpAddrData>>, conf: Config) {
     let mut iteration_start = SystemTime::now();
     let mut current_iface_addrs_map = None;
-    let mut current_best4 = None;
-    let mut current_best6 = None;
+    let (mut current_best4, mut current_best6) = (None, None);
+    let (mut pending_best4, mut pending_best6) = (None, None);
     let mut new_iface_addrs_map = None;
     let mut main_loop_next_timeout = MIN_UPDATE_INTERVAL_S + 1;
 
@@ -620,31 +620,34 @@ async fn update_worker(mut rx: Receiver<HashMap<IfaceIpAddr, IfaceIpAddrData>>, 
             }
         }
 
-        let (mut new_best6, mut new_best4) = (None, None);
         if new_iface_addrs_map != current_iface_addrs_map {
             info!("Detected state change -> Running update");
 
             if let Some(new_iface_addrs_map_data) = new_iface_addrs_map.as_ref() {
                 apply_hooks(new_iface_addrs_map_data, &conf).await;
-                (new_best6, new_best4) = select_best(new_iface_addrs_map_data, &conf);
+                (pending_best6, pending_best4) = select_best(new_iface_addrs_map_data, &conf);
             }
             current_iface_addrs_map = new_iface_addrs_map.clone();
+        } else {
+            if (pending_best6 != current_best6) || pending_best4 != current_best4 {
+                info!("Detected pending DDNS updates -> Re-try update");
+            }
         }
 
-        if new_best6 != current_best6 {
-            if let Some(new_best6_data) = new_best6 {
+        if pending_best6 != current_best6 {
+            if let Some(new_best6_data) = pending_best6 {
                 match send_ddns_update(IpAddr::V6(new_best6_data), &conf).await {
-                    Ok(_) => current_best6 = new_best6,
+                    Ok(_) => current_best6 = pending_best6,
                     Err(_) => (),
                 }
             } else {
                 current_best6 = None;
             }
         }
-        if new_best4 != current_best4 {
-            if let Some(new_best4_data) = new_best4 {
+        if pending_best4 != current_best4 {
+            if let Some(new_best4_data) = pending_best4 {
                 match send_ddns_update(IpAddr::V4(new_best4_data), &conf).await {
-                    Ok(_) => current_best4 = new_best4,
+                    Ok(_) => current_best4 = pending_best4,
                     Err(_) => (),
                 }
             } else {
