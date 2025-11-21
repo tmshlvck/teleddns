@@ -69,9 +69,9 @@ async fn nl_get_iface_map(handle: &Handle) -> Result<HashMap<u32, String>, Error
         debug!("response {:?}", msg);
         let mut ifname: Option<String> = None;
         let mut is_up = false;
-        if msg.header.flags.contains(&LinkFlag::Up)
-            && msg.header.flags.contains(&LinkFlag::LowerUp)
-            && msg.header.flags.contains(&LinkFlag::Running)
+        if msg.header.flags.contains(LinkFlags::Up)
+            && msg.header.flags.contains(LinkFlags::LowerUp)
+            && msg.header.flags.contains(LinkFlags::Running)
         {
             is_up = true;
         }
@@ -119,7 +119,7 @@ fn iface_bonus(iface: &str) -> u8 {
     }
 }
 
-fn flag_bonus(_flags: &Vec<AddressHeaderFlag>) -> u8 {
+fn flag_bonus(_flags: &AddressHeaderFlags) -> u8 {
     // TBD
     // this did not work because i.e. OpenVPN tunnels have permanent bonus
     // while real interfaces have just SLAAC address which is however better:
@@ -134,7 +134,7 @@ fn flag_bonus(_flags: &Vec<AddressHeaderFlag>) -> u8 {
 fn compute_v6_metric(
     ipaddr: &Ipv6Addr,
     iface: &str,
-    flags: &Vec<AddressHeaderFlag>,
+    flags: &AddressHeaderFlags,
     accept_ula: bool,
 ) -> u8 {
     if ipaddr.is_unicast_link_local() || ipaddr.is_multicast() {
@@ -173,7 +173,7 @@ fn compute_v6_metric(
 fn compute_v4_metric(
     ipaddr: &Ipv4Addr,
     iface: &str,
-    flags: &Vec<AddressHeaderFlag>,
+    flags: &AddressHeaderFlags,
     accept_private: bool,
 ) -> u8 {
     if ipaddr.is_loopback() || ipaddr.is_unspecified() {
