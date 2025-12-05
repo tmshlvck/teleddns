@@ -109,26 +109,26 @@ fn match_iface_pattern(ifname: &str, pattern_list: &Vec<String>) -> bool {
     false
 }
 
+// acceptable values 0,8,16,32
 fn iface_bonus(iface: &str) -> u8 {
     if iface.starts_with("en") {
-        2
+        16
     } else if iface.starts_with("wl") {
-        1
+        8
     } else {
         0
     }
 }
 
-fn flag_bonus(_flags: &AddressHeaderFlags) -> u8 {
-    // TBD
-    // this did not work because i.e. OpenVPN tunnels have permanent bonus
-    // while real interfaces have just SLAAC address which is however better:
-    /*let mut b = 0;
-    if flags.contains(&AddressHeaderFlag::Permanent) {
+// acceptable values 0..7
+fn flag_bonus(flags: &AddressHeaderFlags) -> u8 {
+    // Warn: i.e. OpenVPN tunnels have permanent bonus while the real interfaces
+    // may have just SLAAC address
+    let mut b = 0;
+    if flags.contains(AddressHeaderFlags::Permanent) {
         b += 1;
     }
-    b*/
-    0
+    b
 }
 
 fn compute_v6_metric(
@@ -158,15 +158,17 @@ fn compute_v6_metric(
         0
     } else if ipaddr.is_unique_local() {
         if accept_ula {
-            2 + flag_bonus(flags) + iface_bonus(iface)
+            1 + iface_bonus(iface) + flag_bonus(flags)
         } else {
             0
         }
+    } else if flags.contains(AddressHeaderFlags::Deprecated) {
+        1 + iface_bonus(iface) + flag_bonus(flags)
     } else if (ipaddr.octets()[11] == 0xff) && (ipaddr.octets()[12] == 0xfe) {
         // EUI-64
-        10 + flag_bonus(flags) + iface_bonus(iface)
+        129 + iface_bonus(iface) + flag_bonus(flags)
     } else {
-        8 + flag_bonus(flags) + iface_bonus(iface)
+        128 + iface_bonus(iface) + flag_bonus(flags)
     }
 }
 
@@ -182,19 +184,20 @@ fn compute_v4_metric(
         ipaddr.octets(),
         [192, 0, 2, _] | [198, 51, 100, _] | [203, 0, 113, _]
     ) {
+        // [IANA TEST-NET-1, IANA documentation, IANA TEST-NET-3]
+        // .is_documentation()
         0
     }
-    // .is_documentation()
     else if ipaddr.is_link_local() {
         0
     } else if ipaddr.is_private() {
         if accept_private {
-            2 + flag_bonus(flags) + iface_bonus(iface)
+            1 + iface_bonus(iface) + flag_bonus(flags)
         } else {
             0
         }
     } else {
-        8 + flag_bonus(flags) + iface_bonus(iface)
+        128 + iface_bonus(iface) + flag_bonus(flags)
     }
 }
 
@@ -214,6 +217,7 @@ struct IfaceIpAddrData {
     iface: String,
     subnet_addr: IpAddr,
     metric: u8,
+    flags: AddressHeaderFlags,
 }
 
 fn get_subnet_addr(ip: &IpAddr, prefix_len: u8) -> IpAddr {
@@ -267,6 +271,7 @@ async fn get_iface_addrs(handle: &Handle, conf: &Config) -> HashMap<IfaceIpAddr,
                             iface: iface.to_string(),
                             subnet_addr: get_subnet_addr(ip, iphdr.prefix_len),
                             metric: m,
+                            flags: iphdr.flags,
                         },
                     );
                 } else {
@@ -316,17 +321,31 @@ async fn netlink_events_receiver(
                             addr: addr.clone(),
                             prefix_len: nladdrmsg.header.prefix_len,
                         };
-                        if iface_addrs_map.contains_key(&received_ifaceaddr) {
-                            debug!(
-                                "NewAddress notify for already known addr: {} -> ignore",
-                                received_ifaceaddr
-                            );
-                        } else {
-                            debug!(
-                                "NewAddress notify for uknown addr: {} -> trigger update",
-                                received_ifaceaddr
-                            );
-
+                        let addr_changed = match iface_addrs_map.get(&received_ifaceaddr) {
+                            Some(existing) => {
+                                if existing.flags != nladdrmsg.header.flags {
+                                    debug!(
+                                        "NewAddress notify for known addr with changed flags: {} {:?} -> {:?} -> trigger update",
+                                        received_ifaceaddr, existing.flags, nladdrmsg.header.flags
+                                    );
+                                    true
+                                } else {
+                                    debug!(
+                                        "NewAddress notify for already known addr: {} -> ignore",
+                                        received_ifaceaddr
+                                    );
+                                    false
+                                }
+                            }
+                            None => {
+                                debug!(
+                                    "NewAddress notify for unknown addr: {} -> trigger update",
+                                    received_ifaceaddr
+                                );
+                                true
+                            }
+                        };
+                        if addr_changed {
                             iface_addrs_map = get_iface_addrs(&handle, &conf).await;
                             debug!("{:?}", iface_addrs_map);
                             tx.send(iface_addrs_map.clone())
