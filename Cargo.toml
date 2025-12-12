@@ -3,7 +3,7 @@ name = "teleddns"
 version = "0.1.9"
 edition = "2021"
 license = "GPL-3.0-or-later"
-description = "Simple DDNS client that reacts on NetLink changes and can do a little bit more."
+description = "Advanced DDNS client with Netlink support for efficient address change detection"
 homepage = "https://github.com/tmshlvck/teleddns"
 repository = "https://github.com/tmshlvck/teleddns"
 readme = "README.md"
@@ -43,3 +43,40 @@ env_logger = "0.10.0"
 ipnetwork = "0.18.0"
 async-std = { version = "1.9.0", features = ["attributes"] }
 macaddr = "1.0"
+
+[package.metadata.deb]
+maintainer = "Tomas Hlavacek <tmshlvck@gmail.com>"
+copyright = "2023-2025, Tomas Hlavacek"
+license-file = ["LICENSE", "0"]
+extended-description = """\
+TeleDDNS is an advanced DDNS client with daemonization support (as a systemd \
+service) or one-shot running capability. When running in daemon mode, it \
+listens for Netlink messages and pools updates to minimize both DDNS \
+convergence time and resource usage."""
+depends = "$auto"
+section = "net"
+priority = "optional"
+assets = [
+    ["target/release/teleddns", "usr/bin/", "755"],
+    ["teleddns.service", "lib/systemd/system/", "644"],
+    ["README.md", "usr/share/doc/teleddns/README.md", "644"],
+    ["teleddns.yaml.sample", "usr/share/doc/teleddns/teleddns.yaml.sample", "644"],
+    ["teleddns.1", "usr/share/man/man1/teleddns.1", "644"],
+]
+maintainer-scripts = "debian/"
+systemd-units = { enable = false }
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/teleddns", dest = "/usr/bin/teleddns", mode = "755" },
+    { source = "teleddns.service", dest = "/usr/lib/systemd/system/teleddns.service", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/teleddns/README.md", mode = "644", doc = true },
+    { source = "teleddns.yaml.sample", dest = "/usr/share/doc/teleddns/teleddns.yaml.sample", mode = "644", doc = true },
+    { source = "teleddns.1", dest = "/usr/share/man/man1/teleddns.1", mode = "644", doc = true },
+]
+
+[package.metadata.generate-rpm.requires]
+systemd = "*"
+
+[profile.release]
+strip = true

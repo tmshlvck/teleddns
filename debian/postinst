@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+
+#DEBHELPER#
+
+# Inform user about sample configuration
+if [ ! -f /etc/teleddns/teleddns.yaml ]; then
+    echo "TeleDDNS installed. To configure:"
+    echo "  mkdir -p /etc/teleddns"
+    echo "  cp /usr/share/doc/teleddns/teleddns.yaml.sample /etc/teleddns/teleddns.yaml"
+    echo "  # Edit /etc/teleddns/teleddns.yaml with your DDNS credentials"
+    echo "  systemctl enable --now teleddns"
+fi

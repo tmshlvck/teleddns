@@ -1,11 +1,20 @@
 [Unit]
-Description=teleddns systemd service
-After=network.target
+Description=TeleDDNS - Advanced DDNS Client
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/teleddns
-Restart=always
+ExecStart=/usr/bin/teleddns
+Restart=on-failure
+RestartSec=10
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadOnlyPaths=/
+ReadWritePaths=/etc/teleddns
 
 [Install]
 WantedBy=multi-user.target

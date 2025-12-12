@@ -1,0 +1,2 @@
+# This file is optional - we handle installation in debian/rules
+# But it documents what gets installed where

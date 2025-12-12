@@ -1,0 +1,7 @@
+teleddns (0.1.9-1) unstable; urgency=medium
+
+  * Handle deprecated IPv6 addresses properly
+  * Align versions to v0.1.8
+
+ -- Tomas Hlavacek <tmshlvck@gmail.com>  Fri, 05 Dec 2025 12:00:00 +0100
+

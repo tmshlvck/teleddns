@@ -1,9 +1,0 @@
----
-debug: False
-
-ddns_url: 'https://th:PASSWORD@slon.telephant.eu/ddns/update'
-hostname: 'hroch.d.telephant.eu'
-enable_ipv6: True
-enable_ipv4: False
-interfaces:
-  - '*'

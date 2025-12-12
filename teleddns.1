@@ -1,0 +1,112 @@
+.TH TELEDDNS 1 "December 2025" "teleddns 0.1.9" "User Commands"
+.SH NAME
+teleddns \- advanced DDNS client with Netlink support
+.SH SYNOPSIS
+.B teleddns
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B teleddns
+is an advanced DDNS client with daemonization support (as a systemd service)
+or one-shot running capability. When running in daemon mode, it listens for
+Netlink messages and pools updates to minimize both DDNS convergence time
+and resource usage.
+.PP
+The client is compatible with teleddns-server and supports both IPv4 and IPv6
+address updates.
+.SH OPTIONS
+.TP
+.BR \-c ", " \-\-config " " \fIFILE\fR
+Path to the configuration file.
+Default: \fI/etc/teleddns/teleddns.yaml\fR
+.TP
+.BR \-o ", " \-\-oneshot
+Do not daemonize. Run just one DDNS update and hooks, then exit.
+.TP
+.BR \-v ", " \-\-verbose
+Increase logging verbosity. Can be specified multiple times.
+.TP
+.BR \-q ", " \-\-quiet
+Decrease logging verbosity. Can be specified multiple times.
+.TP
+.BR \-h ", " \-\-help
+Print help information and exit.
+.TP
+.BR \-V ", " \-\-version
+Print version information and exit.
+.SH CONFIGURATION
+The configuration file is in YAML format. A sample configuration file is
+installed at \fI/usr/share/doc/teleddns/teleddns.yaml.sample\fR.
+.PP
+To configure teleddns:
+.RS
+.nf
+mkdir -p /etc/teleddns
+cp /usr/share/doc/teleddns/teleddns.yaml.sample /etc/teleddns/teleddns.yaml
+# Edit the file with your DDNS credentials
+.fi
+.RE
+.PP
+Key configuration options:
+.TP
+.B ddns_url
+The DDNS update URL including credentials in the form
+\fIhttps://user:pass@host/ddns/update\fR
+.TP
+.B hostname
+The FQDN to update (e.g., \fImyhost.ddns.example.com\fR)
+.TP
+.B enable_ipv4
+Enable IPv4 address updates (true/false)
+.TP
+.B enable_ipv6
+Enable IPv6 address updates (true/false)
+.TP
+.B interfaces
+List of interfaces to monitor. Use '*' for all interfaces.
+.TP
+.B hooks
+Optional list of hooks to execute after address changes.
+.SH FILES
+.TP
+.I /etc/teleddns/teleddns.yaml
+Main configuration file (created by user)
+.TP
+.I /usr/share/doc/teleddns/teleddns.yaml.sample
+Sample configuration file
+.SH EXIT STATUS
+.TP
+.B 0
+Successful operation
+.TP
+.B non-zero
+An error occurred
+.SH EXAMPLES
+Run a one-shot update:
+.RS
+.nf
+teleddns -o
+.fi
+.RE
+.PP
+Run with increased verbosity:
+.RS
+.nf
+teleddns -v
+.fi
+.RE
+.PP
+Use a custom configuration file:
+.RS
+.nf
+teleddns -c /path/to/config.yaml
+.fi
+.RE
+.SH SEE ALSO
+.BR systemctl (1)
+.SH BUGS
+Report bugs at: https://github.com/tmshlvck/teleddns/issues
+.SH AUTHOR
+Tomas Hlavacek <tmshlvck@gmail.com>
+.SH COPYRIGHT
+Copyright 2023-2025 Tomas Hlavacek.
+License: GPL-3.0-or-later

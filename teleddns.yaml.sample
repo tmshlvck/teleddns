@@ -1,0 +1,48 @@
+# TeleDDNS Configuration File
+#
+# Copy this file to /etc/teleddns/teleddns.yaml and edit the values below.
+# For more information, see: https://github.com/tmshlvck/teleddns
+#
+# TeleDDNS is designed to work with teleddns-server:
+# https://github.com/tmshlvck/teleddns-server
+#
+# The server provides a REST API endpoint for DDNS updates. You need to set up
+# the server first and obtain credentials (username/password) to configure
+# this client.
+
+---
+# Enable debug logging (set to true for troubleshooting)
+debug: false
+
+# DDNS server URL with authentication credentials
+# Format: https://USERNAME:PASSWORD@your-ddns-server.example.com/ddns/update
+# Replace:
+#   - USERNAME: Your DDNS account username from teleddns-server
+#   - PASSWORD: Your DDNS account password from teleddns-server
+#   - your-ddns-server.example.com: Hostname of your teleddns-server instance
+ddns_url: 'https://USERNAME:PASSWORD@your-ddns-server.example.com/ddns/update'
+
+# The fully qualified domain name (FQDN) that will be updated
+# This hostname must be configured in your teleddns-server
+hostname: 'myhost.ddns.example.com'
+
+# Enable IPv6 address updates (recommended for most setups)
+enable_ipv6: true
+
+# Enable IPv4 address updates
+enable_ipv4: false
+
+# Network interfaces to monitor for address changes
+# Use '*' to monitor all interfaces, or specify interface names:
+# interfaces:
+#   - 'eth0'
+#   - 'wlan0'
+interfaces:
+  - '*'
+
+# Optional: Hooks to run after address changes
+# Hooks can be used to update firewall rules or run custom scripts
+# Example:
+# hooks:
+#   - nft_sets_outfile: "/etc/nftables.d/00-localnets.rules"
+#     shell: "nft -f /etc/nftables.conf"
