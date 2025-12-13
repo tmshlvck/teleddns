@@ -118,8 +118,9 @@ jobs:
       - name: Submit COPR build
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
-          TARBALL_URL="https://github.com/tmshlvck/teleddns/releases/download/v${VERSION}/teleddns-${VERSION}.tar.gz"
-          copr-cli build tmshlvck/teleddns --nowait "$TARBALL_URL"
+          # Submit build using spec file URL - COPR will download Source0 from the spec
+          SPEC_URL="https://raw.githubusercontent.com/tmshlvck/teleddns/v${VERSION}/teleddns.spec"
+          copr-cli build tmshlvck/teleddns --nowait "$SPEC_URL"
 
   # Publish to Launchpad PPA
   publish-ppa:
@@ -146,7 +147,7 @@ jobs:
           GPG_KEY_ID=$(gpg --list-secret-keys --keyid-format LONG | grep sec | head -1 | awk '{print $2}' | cut -d'/' -f2)
           echo "GPG_KEY_ID=$GPG_KEY_ID" >> $GITHUB_ENV
 
-      - name: Prepare source package
+      - name: Build and upload source package
         env:
           DEBFULLNAME: "Tomas Hlavacek"
           DEBEMAIL: "tmshlvck@gmail.com"
@@ -167,8 +168,5 @@ jobs:
           # Build source package only (no binary build, skip dep check)
           debuild -S -sa -d -k${{ env.GPG_KEY_ID }}
 
-      - name: Upload to PPA
-        run: |
-          VERSION="${{ needs.prepare.outputs.version }}"
-          SERIES="${{ matrix.series }}"
+          # Upload to PPA (files are in parent directory)
           dput ppa:tmshlvck/teleddns ../teleddns_${VERSION}-1~ppa1~${SERIES}1_source.changes
