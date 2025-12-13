@@ -45,6 +45,10 @@ Features:
 %autosetup -n %{name}-%{version}
 
 %build
+# Debug: show current directory and contents
+pwd
+ls -la
+
 # Build in release mode
 cargo build --release %{?_smp_mflags}
 
