@@ -90,6 +90,37 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
 
+  # Build in Fedora COPR
+  publish-copr:
+    name: Build in COPR
+    needs: [prepare, github-release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install copr-cli
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pip
+          pip3 install copr-cli
+
+      - name: Configure copr-cli
+        run: |
+          mkdir -p ~/.config
+          cat > ~/.config/copr << EOF
+          [copr-cli]
+          login = ${{ secrets.COPR_LOGIN }}
+          username = tmshlvck
+          token = ${{ secrets.COPR_TOKEN }}
+          copr_url = https://copr.fedorainfracloud.org
+          EOF
+
+      - name: Submit COPR build
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          TARBALL_URL="https://github.com/tmshlvck/teleddns/releases/download/v${VERSION}/teleddns-${VERSION}.tar.gz"
+          copr-cli build tmshlvck/teleddns --nowait "$TARBALL_URL"
+
   # Publish to Launchpad PPA
   publish-ppa:
     name: Publish to Launchpad PPA
@@ -133,8 +164,8 @@ jobs:
           # Create orig tarball (required for non-native packages)
           cp ../teleddns-${VERSION}.tar.gz ../teleddns_${VERSION}.orig.tar.gz
 
-          # Build source package only (no binary build)
-          debuild -S -sa -k${{ env.GPG_KEY_ID }}
+          # Build source package only (no binary build, skip dep check)
+          debuild -S -sa -d -k${{ env.GPG_KEY_ID }}
 
       - name: Upload to PPA
         run: |
