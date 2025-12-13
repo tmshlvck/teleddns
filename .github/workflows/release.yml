@@ -95,22 +95,49 @@ jobs:
     name: Publish to Launchpad PPA
     needs: prepare
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        series: [noble, jammy, questing]
     steps:
-      - uses: actions/checkout@v4
-
       - name: Download tarball artifact
         uses: actions/download-artifact@v4
         with:
           name: vendored-tarball
 
-      - name: Publish to PPA
-        uses: yuezk/publish-ppa-package@v2
-        with:
-          repository: tmshlvck/teleddns
-          gpg_private_key: ${{ secrets.PPA_GPG_PRIVATE_KEY }}
-          gpg_passphrase: ${{ secrets.PPA_GPG_PASSPHRASE }}
-          tarball: ${{ needs.prepare.outputs.tarball }}
-          debian_dir: debian
-          deb_email: tmshlvck@gmail.com
-          deb_fullname: "Tomas Hlavacek"
-          series: "noble jammy"
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y devscripts debhelper gpg dput
+
+      - name: Import GPG key
+        run: |
+          echo "${{ secrets.PPA_GPG_PRIVATE_KEY }}" | gpg --batch --import
+          GPG_KEY_ID=$(gpg --list-secret-keys --keyid-format LONG | grep sec | head -1 | awk '{print $2}' | cut -d'/' -f2)
+          echo "GPG_KEY_ID=$GPG_KEY_ID" >> $GITHUB_ENV
+
+      - name: Prepare source package
+        env:
+          DEBFULLNAME: "Tomas Hlavacek"
+          DEBEMAIL: "tmshlvck@gmail.com"
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          SERIES="${{ matrix.series }}"
+
+          # Extract tarball
+          tar xzf teleddns-${VERSION}.tar.gz
+          cd teleddns-${VERSION}
+
+          # Update changelog for this series
+          dch --distribution ${SERIES} --local "~ppa1~${SERIES}" "PPA release for ${SERIES}"
+
+          # Create orig tarball (required for non-native packages)
+          cp ../teleddns-${VERSION}.tar.gz ../teleddns_${VERSION}.orig.tar.gz
+
+          # Build source package only (no binary build)
+          debuild -S -sa -k${{ env.GPG_KEY_ID }}
+
+      - name: Upload to PPA
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          SERIES="${{ matrix.series }}"
+          dput ppa:tmshlvck/teleddns ../teleddns_${VERSION}-1~ppa1~${SERIES}1_source.changes
