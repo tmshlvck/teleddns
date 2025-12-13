@@ -9,11 +9,14 @@ export CARGO_BUILD_JOBS = $(shell nproc)
 # Rust flags for reproducible builds
 export RUSTFLAGS = -C debuginfo=0
 
+# Use vendored dependencies for offline build
+export CARGO_HOME = $(CURDIR)/.cargo
+
 %:
 	dh $@
 
 override_dh_auto_build:
-	cargo build --release
+	cargo build --release --offline
 
 override_dh_auto_install:
 	# Install binary

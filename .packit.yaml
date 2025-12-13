@@ -1,16 +1,25 @@
 # Packit configuration for automated COPR builds
 # See: https://packit.dev/docs/configuration
+#
+# This config uses vendored source tarballs from GitHub Releases.
+# The release workflow creates the tarball, then Packit triggers on release.
 
 specfile_path: teleddns.spec
 upstream_tag_template: v{version}
 
-# Automatically update version in spec file from git tag
+# Download source tarball from GitHub Releases (created by release workflow)
+# The URL is defined in teleddns.spec Source0
+sources:
+  - path: teleddns-{version}-vendor.tar.gz
+    url: https://github.com/tmshlvck/teleddns/releases/download/v{version}/teleddns-{version}-vendor.tar.gz
+
+# Don't create archive from git - use the downloaded vendored tarball
 actions:
-  post-upstream-clone:
-    - "sed -i 's/^Version:.*/Version: ${PACKIT_PROJECT_VERSION}/' teleddns.spec"
+  create-archive:
+    - bash -c "echo 'Using vendored tarball from GitHub Releases'"
 
 jobs:
-  # Build in COPR on new releases (tags)
+  # Build in COPR on new GitHub releases (after release workflow creates tarball)
   - job: copr_build
     trigger: release
     owner: tmshlvck

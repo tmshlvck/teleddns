@@ -1,63 +1,116 @@
 name: Release
 
-permissions:
-  contents: write
-
 on:
   push:
     tags:
       - v[0-9]+.*
 
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  create-release:
+  # Validate versions and create vendored tarball
+  prepare:
+    name: Prepare Release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tarball: ${{ steps.version.outputs.tarball }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+
+      - name: Check version alignment
+        run: ./scripts/check-versions.sh
+
+      - name: Extract version
+        id: version
+        run: |
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tarball=teleddns-${VERSION}-vendor.tar.gz" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Verify tag matches version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CARGO_VERSION="${{ steps.version.outputs.version }}"
+          if [[ "$TAG_VERSION" != "$CARGO_VERSION" ]]; then
+            echo "ERROR: Tag version ($TAG_VERSION) != Cargo.toml version ($CARGO_VERSION)"
+            exit 1
+          fi
+
+      - name: Create vendored tarball
+        run: ./scripts/create-vendor-tarball.sh .
+
+      - name: Upload tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vendored-tarball
+          path: ${{ steps.version.outputs.tarball }}
+          retention-days: 1
+
+  # Publish to crates.io
+  publish-crates:
+    name: Publish to crates.io
+    needs: prepare
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: taiki-e/create-gh-release-action@v1
-        with:
-          #changelog: CHANGELOG.md
-          token: ${{ secrets.RELEASE_TOKEN }}
 
-  upload-assets-amd64:
-    needs: create-release
-    runs-on: ubuntu-22.04
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+
+      - name: Publish to crates.io
+        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  # Create GitHub Release with vendored tarball
+  github-release:
+    name: Create GitHub Release
+    needs: prepare
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: taiki-e/upload-rust-binary-action@v1
+
+      - name: Download tarball artifact
+        uses: actions/download-artifact@v4
         with:
-          bin: teleddns
-          token: ${{ secrets.RELEASE_TOKEN }}
+          name: vendored-tarball
 
-  ## This is too now -> glibc compatibility for Debian does not work
-  #upload-assets-arm64:
-  #  needs: create-release
-  #  runs-on: ubuntu-24.04-arm
-  #  steps:
-  #    - uses: actions/checkout@v4
-  #    - uses: taiki-e/upload-rust-binary-action@v1
-  #      with:
-  #        bin: teleddns
-  #        token: ${{ secrets.RELEASE_TOKEN }}
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ needs.prepare.outputs.tarball }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
 
-  upload-assets-multiarch:
-    needs: create-release
-    strategy:
-      matrix:
-        include:
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-22.04
-          - target: armv7-unknown-linux-gnueabihf
-            os: ubuntu-22.04
-          - target: riscv64gc-unknown-linux-gnu
-            os: ubuntu-latest
-    runs-on: ${{ matrix.os }}
+  # Publish to Launchpad PPA
+  publish-ppa:
+    name: Publish to Launchpad PPA
+    needs: prepare
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: taiki-e/setup-cross-toolchain-action@v1
+
+      - name: Download tarball artifact
+        uses: actions/download-artifact@v4
         with:
-          target: ${{ matrix.target }}
-      - uses: taiki-e/upload-rust-binary-action@v1
+          name: vendored-tarball
+
+      - name: Publish to PPA
+        uses: yuezk/publish-ppa-package@v2
         with:
-          target: ${{ matrix.target }}
-          bin: teleddns
-          token: ${{ secrets.RELEASE_TOKEN }}
+          repository: tmshlvck/teleddns
+          gpg_private_key: ${{ secrets.PPA_GPG_PRIVATE_KEY }}
+          gpg_passphrase: ${{ secrets.PPA_GPG_PASSPHRASE }}
+          tarball: ${{ needs.prepare.outputs.tarball }}
+          debian_dir: debian
+          deb_email: tmshlvck@gmail.com
+          deb_fullname: "Tomas Hlavacek"
+          series: "noble jammy"

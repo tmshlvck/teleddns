@@ -1,11 +1,11 @@
 # Spec file for Fedora COPR
-# This spec builds teleddns from source using cargo
+# This spec builds teleddns from vendored source tarball (offline build)
 #
 # To build locally:
 #   dnf install rust cargo openssl-devel
-#   rpmbuild -ba teleddns.spec
+#   rpmbuild -ta teleddns-VERSION-vendor.tar.gz
 #
-# For COPR, point to the git repository containing this spec file.
+# For COPR, Packit downloads the vendored tarball from GitHub Releases.
 
 Name:           teleddns
 Version:        0.1.11
@@ -14,7 +14,7 @@ Summary:        Advanced DDNS client with Netlink support
 
 License:        GPL-3.0-or-later
 URL:            https://github.com/tmshlvck/teleddns
-Source0:        https://github.com/tmshlvck/teleddns/archive/v%{version}/%{name}-%{version}.tar.gz
+Source0:        https://github.com/tmshlvck/teleddns/releases/download/v%{version}/%{name}-%{version}-vendor.tar.gz
 
 BuildRequires:  rust >= 1.70
 BuildRequires:  cargo
@@ -45,8 +45,9 @@ Features:
 %autosetup -n %{name}-%{version}
 
 %build
-# Build in release mode
-cargo build --release %{?_smp_mflags}
+# Build in release mode using vendored dependencies (offline)
+export CARGO_HOME=$(pwd)/.cargo
+cargo build --release --offline %{?_smp_mflags}
 
 # Compress man page
 gzip -9 -k teleddns.1
