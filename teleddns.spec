@@ -8,7 +8,7 @@
 # For COPR, point to the git repository containing this spec file.
 
 Name:           teleddns
-Version:        0.1.10
+Version:        0.1.11
 Release:        1%{?dist}
 Summary:        Advanced DDNS client with Netlink support
 
@@ -93,6 +93,9 @@ fi
 %dir %{_sysconfdir}/teleddns
 
 %changelog
+* Sat Dec 13 2025 Tomas Hlavacek <tmshlvck@gmail.com> - 0.1.11-1
+- Suppress netlink-packet-route kernel compatibility warnings unless debug mode
+
 * Sat Dec 13 2025 Tomas Hlavacek <tmshlvck@gmail.com> - 0.1.10-1
 - Add RPM spec and Debian packaging
 - Add Packit integration for automated COPR builds

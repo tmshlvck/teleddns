@@ -1,6 +1,6 @@
 [package]
 name = "teleddns"
-version = "0.1.10"
+version = "0.1.11"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Advanced DDNS client with Netlink support for efficient address change detection"

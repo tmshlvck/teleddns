@@ -399,7 +399,7 @@ fn write_nft_sets(filename: &str, state: &HashMap<IfaceIpAddr, IfaceIpAddrData>)
     let file = match File::create(filename) {
         Ok(f) => f,
         Err(e) => {
-            error!("{:?}", e);
+            error!("Failed to write NFT sets: {:?}", e);
             return;
         }
     };
@@ -762,12 +762,20 @@ async fn main() {
         Some(true) => log::LevelFilter::Debug,
         None => args.verbose.log_level_filter(),
     };
-    env_logger::builder()
+    let mut builder = env_logger::builder();
+    builder
         .format_timestamp(None)
         .format_level(false)
         .format_target(false)
-        .filter_level(loglevel)
-        .init();
+        .filter_level(loglevel);
+    // Suppress netlink-packet-route kernel compatibility warnings unless in debug mode
+    if loglevel < log::LevelFilter::Debug {
+        builder.filter_module(
+            "netlink_packet_route::link::buffer_tool",
+            log::LevelFilter::Error,
+        );
+    }
+    builder.init();
     info!("Read config file {} finished", &args.config);
     info!("Set log level {:?}", loglevel);
 

@@ -16,6 +16,11 @@ curl -s -L https://raw.githubusercontent.com/tmshlvck/teleddns/master/deploy.sh 
 
 Where URL is the API URL including the username and password in `https://user:pass@host.domain.tld/ddns/update` form and domainname is the FQDN of the host (example: `testhost.d.telephant.eu`).
 
+### Packages
+
+Fedora COPR: [![Copr build status](https://copr.fedorainfracloud.org/coprs/tmshlvck/teleddns/package/teleddns/status_image/last_build.png)](https://copr.fedorainfracloud.org/coprs/tmshlvck/teleddns/package/teleddns/)
+Ubuntu PPA: TBD
+
 ### Requirements / prerequisities
 
 * Fairly recent Linux - say Ubuntu 20.04 or similar
@@ -82,6 +87,22 @@ sudo cp teleddns.service /etc/systemd/system/teleddns.service
 sudo systemctl damoen-reload
 sudo systemctl enable teleddns
 sudo systemctl restart teleddns
+```
+
+### Security Hardening
+
+The systemd unit includes basic hardening (`NoNewPrivileges`, `ProtectHome`, `PrivateTmp`). If you need stricter isolation, customize the service:
+
+```
+sudo systemctl edit teleddns
+```
+
+Add restrictions as needed, e.g.:
+```
+[Service]
+ProtectSystem=strict
+ReadOnlyPaths=/
+ReadWritePaths=/etc/teleddns /etc/nftables.d
 ```
 
 Check systemd unit with `systemctl status teleddns`. The expected result should be similar to:
