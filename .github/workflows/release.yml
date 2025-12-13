@@ -108,7 +108,7 @@ jobs:
         with:
           repository: tmshlvck/teleddns
           gpg_private_key: ${{ secrets.PPA_GPG_PRIVATE_KEY }}
-#          gpg_passphrase: ${{ secrets.PPA_GPG_PASSPHRASE }}
+          gpg_passphrase: ${{ secrets.PPA_GPG_PASSPHRASE }}
           tarball: ${{ needs.prepare.outputs.tarball }}
           debian_dir: debian
           deb_email: tmshlvck@gmail.com
