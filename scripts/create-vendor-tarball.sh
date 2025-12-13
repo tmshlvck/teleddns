@@ -6,7 +6,13 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-OUTPUT_DIR="${1:-$PROJECT_ROOT}"
+
+# Convert output dir to absolute path
+if [[ -n "$1" ]]; then
+    OUTPUT_DIR="$(cd "$1" && pwd)"
+else
+    OUTPUT_DIR="$PROJECT_ROOT"
+fi
 
 cd "$PROJECT_ROOT"
 
