@@ -96,12 +96,15 @@ jobs:
     needs: [prepare, github-release]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Download tarball artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: vendored-tarball
 
-      - name: Install copr-cli
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-pip
+          sudo apt-get install -y python3-pip rpm
           pip3 install copr-cli
 
       - name: Configure copr-cli
@@ -115,12 +118,29 @@ jobs:
           copr_url = https://copr.fedorainfracloud.org
           EOF
 
-      - name: Submit COPR build
+      - name: Build and submit SRPM
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
-          # Submit build using spec file URL - COPR will download Source0 from the spec
-          SPEC_URL="https://raw.githubusercontent.com/tmshlvck/teleddns/v${VERSION}/teleddns.spec"
-          copr-cli build tmshlvck/teleddns --nowait "$SPEC_URL"
+          # Use GitHub run number for RPM Release - auto-increments on each workflow run
+          RPM_RELEASE="${{ github.run_number }}"
+
+          # Extract tarball to get spec file
+          tar xzf teleddns-${VERSION}.tar.gz
+
+          # Update Release field in spec to use run number
+          sed -i "s/^Release:.*/Release:        ${RPM_RELEASE}%{?dist}/" teleddns-${VERSION}/teleddns.spec
+
+          # Set up rpmbuild directories
+          mkdir -p ~/rpmbuild/{SOURCES,SPECS,SRPMS}
+          cp teleddns-${VERSION}.tar.gz ~/rpmbuild/SOURCES/
+          cp teleddns-${VERSION}/teleddns.spec ~/rpmbuild/SPECS/
+
+          # Build SRPM
+          rpmbuild -bs ~/rpmbuild/SPECS/teleddns.spec
+
+          # Submit SRPM to COPR
+          SRPM=$(ls ~/rpmbuild/SRPMS/*.src.rpm)
+          copr-cli build tmshlvck/teleddns --nowait "$SRPM"
 
   # Publish to Launchpad PPA
   publish-ppa:
@@ -154,13 +174,15 @@ jobs:
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
           SERIES="${{ matrix.series }}"
+          # Use GitHub run number for PPA revision - auto-increments on each workflow run
+          PPA_REV="${{ github.run_number }}"
 
           # Extract tarball
           tar xzf teleddns-${VERSION}.tar.gz
           cd teleddns-${VERSION}
 
-          # Update changelog for this series
-          dch --distribution ${SERIES} --local "~ppa1~${SERIES}" "PPA release for ${SERIES}"
+          # Update changelog for this series (version becomes X.Y.Z-1~ppaN~series1)
+          dch --distribution ${SERIES} --local "~ppa${PPA_REV}~${SERIES}" "PPA release for ${SERIES}"
 
           # Create orig tarball (required for non-native packages)
           cp ../teleddns-${VERSION}.tar.gz ../teleddns_${VERSION}.orig.tar.gz
@@ -169,4 +191,4 @@ jobs:
           debuild -S -sa -d -k${{ env.GPG_KEY_ID }}
 
           # Upload to PPA (files are in parent directory)
-          dput ppa:tmshlvck/teleddns ../teleddns_${VERSION}-1~ppa1~${SERIES}1_source.changes
+          dput ppa:tmshlvck/teleddns ../teleddns_${VERSION}-1~ppa${PPA_REV}~${SERIES}1_source.changes
