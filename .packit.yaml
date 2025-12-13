@@ -1,0 +1,20 @@
+# Packit configuration for automated COPR builds
+# See: https://packit.dev/docs/configuration
+
+specfile_path: teleddns.spec
+upstream_tag_template: v{version}
+
+# Automatically update version in spec file from git tag
+actions:
+  post-upstream-clone:
+    - "sed -i 's/^Version:.*/Version: ${PACKIT_PROJECT_VERSION}/' teleddns.spec"
+
+jobs:
+  # Build in COPR on new releases (tags)
+  - job: copr_build
+    trigger: release
+    owner: tmshlvck
+    project: teleddns
+    targets:
+      - fedora-stable
+      - fedora-development

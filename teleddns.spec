@@ -8,7 +8,7 @@
 # For COPR, point to the git repository containing this spec file.
 
 Name:           teleddns
-Version:        0.1.9
+Version:        0.1.10
 Release:        1%{?dist}
 Summary:        Advanced DDNS client with Netlink support
 
@@ -45,10 +45,6 @@ Features:
 %autosetup -n %{name}-%{version}
 
 %build
-# Debug: show current directory and contents
-pwd
-ls -la
-
 # Build in release mode
 cargo build --release %{?_smp_mflags}
 
@@ -97,6 +93,10 @@ fi
 %dir %{_sysconfdir}/teleddns
 
 %changelog
+* Sat Dec 13 2025 Tomas Hlavacek <tmshlvck@gmail.com> - 0.1.10-1
+- Add RPM spec and Debian packaging
+- Add Packit integration for automated COPR builds
+
 * Fri Dec 05 2025 Tomas Hlavacek <tmshlvck@gmail.com> - 0.1.9-1
 - Handle deprecated IPv6 addresses properly
 - Align versions to v0.1.8
