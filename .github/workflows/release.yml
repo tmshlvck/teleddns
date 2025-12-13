@@ -33,7 +33,7 @@ jobs:
         run: |
           VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tarball=teleddns-${VERSION}-vendor.tar.gz" >> $GITHUB_OUTPUT
+          echo "tarball=teleddns-${VERSION}.tar.gz" >> $GITHUB_OUTPUT
           echo "Version: $VERSION"
 
       - name: Verify tag matches version

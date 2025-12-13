@@ -9,9 +9,10 @@ upstream_tag_template: v{version}
 
 # Download source tarball from GitHub Releases (created by release workflow)
 # The URL is defined in teleddns.spec Source0
+# Note: All release tarballs include vendored dependencies for offline builds
 sources:
-  - path: teleddns-{version}-vendor.tar.gz
-    url: https://github.com/tmshlvck/teleddns/releases/download/v{version}/teleddns-{version}-vendor.tar.gz
+  - path: teleddns-{version}.tar.gz
+    url: https://github.com/tmshlvck/teleddns/releases/download/v{version}/teleddns-{version}.tar.gz
 
 # Don't create archive from git - use the downloaded vendored tarball
 actions:

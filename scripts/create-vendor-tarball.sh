@@ -19,7 +19,9 @@ cd "$PROJECT_ROOT"
 # Get version from Cargo.toml
 VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
 PACKAGE_NAME="teleddns"
-TARBALL_NAME="${PACKAGE_NAME}-${VERSION}-vendor.tar.gz"
+# Note: Tarball follows Debian naming convention {package}-{version}.tar.gz
+# All release tarballs include vendored dependencies for offline builds
+TARBALL_NAME="${PACKAGE_NAME}-${VERSION}.tar.gz"
 
 echo "Creating vendored tarball for $PACKAGE_NAME v$VERSION..."
 
