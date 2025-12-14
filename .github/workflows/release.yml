@@ -68,7 +68,7 @@ jobs:
           name: deb-${{ matrix.arch }}
           path: target/${{ matrix.target }}/debian/*.deb
 
-  # Create GitHub Release with .deb packages
+  # Create GitHub Release with source tarball and .deb packages
   github-release:
     name: Create GitHub Release
     needs: build-debs
@@ -82,10 +82,17 @@ jobs:
           pattern: deb-*
           merge-multiple: true
 
+      - name: Create source tarball
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          git archive --format=tar.gz --prefix=teleddns-${VERSION}/ -o teleddns-${VERSION}.tar.gz HEAD
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: "*.deb"
+          files: |
+            *.deb
+            *.tar.gz
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

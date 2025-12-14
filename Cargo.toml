@@ -2,6 +2,7 @@
 name = "teleddns"
 version = "0.1.13"
 edition = "2021"
+rust-version = "1.77"
 license = "GPL-3.0-or-later"
 description = "Advanced DDNS client with Netlink support for efficient address change detection"
 homepage = "https://github.com/tmshlvck/teleddns"
@@ -56,7 +57,9 @@ convergence time and resource usage."""
 depends = "$auto"
 section = "net"
 priority = "optional"
+conf-files = ["/etc/teleddns/"]
 assets = [
+    ["target/release/teleddns", "usr/bin/", "755"],
     ["teleddns.service", "lib/systemd/system/", "644"],
     ["README.md", "usr/share/doc/teleddns/README.md", "644"],
     ["teleddns.yaml.sample", "usr/share/doc/teleddns/teleddns.yaml.sample", "644"],
