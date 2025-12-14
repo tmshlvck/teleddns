@@ -8,7 +8,7 @@
 # For COPR, Packit downloads the vendored tarball from GitHub Releases.
 
 Name:           teleddns
-Version:        0.1.11
+Version:        0.1.12
 Release:        1%{?dist}
 Summary:        Advanced DDNS client with Netlink support
 
@@ -94,6 +94,10 @@ fi
 %dir %{_sysconfdir}/teleddns
 
 %changelog
+* Sun Dec 15 2025 Tomas Hlavacek <tmshlvck@gmail.com> - 0.1.12-1
+- Fix Debian/Ubuntu packaging for vendored offline builds
+- Use Cargo.lock v3 for compatibility with Rust 1.75 (Ubuntu 24.04)
+
 * Sat Dec 13 2025 Tomas Hlavacek <tmshlvck@gmail.com> - 0.1.11-1
 - Suppress netlink-packet-route kernel compatibility warnings unless debug mode
 

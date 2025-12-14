@@ -149,7 +149,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        series: [noble, jammy, questing]
+        series: [noble, questing]
     steps:
       - name: Download tarball artifact
         uses: actions/download-artifact@v4

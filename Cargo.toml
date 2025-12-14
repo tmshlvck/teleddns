@@ -1,7 +1,8 @@
 [package]
 name = "teleddns"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2021"
+rust-version = "1.75"  # Minimum Rust version (Ubuntu 24.04 LTS)
 license = "GPL-3.0-or-later"
 description = "Advanced DDNS client with Netlink support for efficient address change detection"
 homepage = "https://github.com/tmshlvck/teleddns"

@@ -1,3 +1,10 @@
+teleddns (0.1.12-1) unstable; urgency=medium
+
+  * Fix Debian/Ubuntu packaging for vendored offline builds
+  * Use Cargo.lock v3 for compatibility with Rust 1.75 (Ubuntu 24.04)
+
+ -- Tomas Hlavacek <tmshlvck@gmail.com>  Sun, 15 Dec 2025 01:30:00 +0100
+
 teleddns (0.1.11-1) unstable; urgency=medium
 
   * Suppress netlink-packet-route kernel compatibility warnings unless debug mode
