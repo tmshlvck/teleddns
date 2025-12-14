@@ -67,7 +67,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Publish to crates.io
-        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        # --allow-dirty needed because newer cargo may auto-upgrade Cargo.lock v3→v4
+        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }} --allow-dirty
 
   # Create GitHub Release with vendored tarball
   github-release:
