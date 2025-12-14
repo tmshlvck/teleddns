@@ -177,8 +177,15 @@ jobs:
           # Use GitHub run number for PPA revision - auto-increments on each workflow run
           PPA_REV="${{ github.run_number }}"
 
-          # Extract tarball
+          # Extract release tarball (contains source + vendor + debian/)
           tar xzf teleddns-${VERSION}.tar.gz
+
+          # For Debian quilt format, orig tarball must NOT contain debian/
+          # Create orig tarball by excluding debian/ from extracted source
+          mv teleddns-${VERSION}/debian ./debian-packaging
+          tar czf teleddns_${VERSION}.orig.tar.gz teleddns-${VERSION}
+          mv ./debian-packaging teleddns-${VERSION}/debian
+
           cd teleddns-${VERSION}
 
           # Update changelog for this series (version becomes X.Y.Z-1~ppaN~series1)
