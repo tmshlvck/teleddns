@@ -128,7 +128,7 @@ jobs:
           for deb in *.deb; do
             echo "Processing $deb..."
             scp "$deb" "${SSH_USER}@${SSH_HOST}:/tmp/"
-            ssh "${SSH_USER}@${SSH_HOST}" "cd /srv/apt/www && reprepro includedeb trixie /tmp/$deb && reprepro includedeb noble /tmp/$deb && rm /tmp/$deb"
+            ssh "${SSH_USER}@${SSH_HOST}" "cd /srv/apt/www/telephant && reprepro includedeb trixie /tmp/$deb && reprepro includedeb noble /tmp/$deb && rm /tmp/$deb"
           done
 
   # Build in Fedora COPR
