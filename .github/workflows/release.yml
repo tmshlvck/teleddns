@@ -120,9 +120,14 @@ jobs:
         run: |
           # Setup SSH
           mkdir -p ~/.ssh
-          echo "$SSH_KEY" > ~/.ssh/id_ed25519
+          echo "$SSH_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan "$SSH_HOST" >> ~/.ssh/known_hosts
+
+          # Debug: verify key format (shows first/last line only)
+          head -1 ~/.ssh/id_ed25519
+          tail -1 ~/.ssh/id_ed25519
+          wc -l ~/.ssh/id_ed25519
 
           # Upload .deb files
           scp *.deb "${SSH_USER}@${SSH_HOST}:/tmp/"
