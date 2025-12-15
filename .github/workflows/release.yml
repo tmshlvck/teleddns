@@ -120,26 +120,16 @@ jobs:
         run: |
           # Setup SSH
           mkdir -p ~/.ssh
-          echo "$SSH_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
+          echo "$SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan "$SSH_HOST" >> ~/.ssh/known_hosts
 
-          # Debug: verify key format (shows first/last line only)
-          head -1 ~/.ssh/id_ed25519
-          tail -1 ~/.ssh/id_ed25519
-          wc -l ~/.ssh/id_ed25519
-
-          # Upload .deb files
-          scp *.deb "${SSH_USER}@${SSH_HOST}:/tmp/"
-
-          # Add to repository
-          VERSION="${GITHUB_REF_NAME#v}"
-          ssh "${SSH_USER}@${SSH_HOST}" "cd /srv/apt/www && \
-            reprepro includedeb stable /tmp/teleddns_${VERSION}_amd64.deb && \
-            reprepro includedeb stable /tmp/teleddns_${VERSION}_arm64.deb && \
-            reprepro includedeb stable /tmp/teleddns_${VERSION}_armhf.deb && \
-            reprepro includedeb stable /tmp/teleddns_${VERSION}_riscv64.deb && \
-            rm /tmp/teleddns_${VERSION}_*.deb"
+          # Upload and add each .deb file to the repository
+          for deb in *.deb; do
+            echo "Processing $deb..."
+            scp "$deb" "${SSH_USER}@${SSH_HOST}:/tmp/"
+            ssh "${SSH_USER}@${SSH_HOST}" "cd /srv/apt/www && reprepro includedeb stable /tmp/$deb && rm /tmp/$deb"
+          done
 
   # Build in Fedora COPR
   publish-copr:
