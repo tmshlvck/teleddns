@@ -7,7 +7,7 @@
 # COPR builds from this spec file with network access enabled.
 
 Name:           teleddns
-Version:        0.1.13
+Version:        0.1.14
 Release:        1%{?dist}
 Summary:        Advanced DDNS client with Netlink support
 
@@ -91,6 +91,9 @@ fi
 %dir %{_sysconfdir}/teleddns
 
 %changelog
+* Mon Dec 15 2025 Tomas Hlavacek <tmshlvck@gmail.com> - 0.1.14-1
+- Version bump
+
 * Sun Dec 15 2025 Tomas Hlavacek <tmshlvck@gmail.com> - 0.1.13-1
 - Simplify packaging: use cargo-deb for .deb, COPR with network for RPM
 - Drop PPA support, use cross-compiled .deb binaries instead
