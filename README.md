@@ -41,8 +41,8 @@ sudo journalctl -u teleddns -f
 #### Packages
 
 * [crates.io](https://crates.io/crates/teleddns) - use `cargo install teleddns`
-* [Fedora COPR](https://copr.fedorainfracloud.org/coprs/tmshlvck/teleddns/package/teleddns/) ![Copr build status](https://copr.fedorainfracloud.org/coprs/tmshlvck/teleddns/package/teleddns/status_image/last_build.png)
-* [Debian/Ubuntu APT](https://apt.telephant.eu) - see [installation instructions](INSTALL-DEB.md)
+* [Fedora COPR](https://copr.fedorainfracloud.org/coprs/tmshlvck/teleddns/package/teleddns/) - use `dnf copr enable tmshlvck/teleddns`
+* [Debian/Ubuntu APT](https://apt.telephant.eu) - see [installation instructions](https://apt.telephant.eu/INSTALL-DEB.txt)
 
 #### Debian/Ubuntu (APT)
 
