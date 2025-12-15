@@ -12,9 +12,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Publish to crates.io
-  publish-crates:
-    name: Publish to crates.io
+  publish-sources:
+    name: Publish sources to crates.io
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -68,7 +67,17 @@ jobs:
           name: deb-${{ matrix.arch }}
           path: target/${{ matrix.target }}/debian/*.deb
 
-  # Create GitHub Release with source tarball and .deb packages
+      - name: Prepare binary for upload
+        run: |
+          cp target/${{ matrix.target }}/release/teleddns teleddns-${{ matrix.target }}
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.arch }}
+          path: teleddns-${{ matrix.target }}
+
+  # Create GitHub Release with source tarball and binaries
   github-release:
     name: Create GitHub Release
     needs: build-debs
@@ -76,51 +85,82 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Download all binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern:
+            - bin-*
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            teleddns-*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Publish to APT repository
+  publish-apt:
+    name: Publish to APT repo
+    needs: build-debs
+    runs-on: ubuntu-latest
+    steps:
       - name: Download all .deb artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: deb-*
           merge-multiple: true
 
-      - name: Create source tarball
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          git archive --format=tar.gz --prefix=teleddns-${VERSION}/ -o teleddns-${VERSION}.tar.gz HEAD
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            *.deb
-            *.tar.gz
-          generate_release_notes: true
+      - name: Upload and publish to APT repo
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SSH_KEY: ${{ secrets.APT_SSH_KEY }}
+          SSH_HOST: ${{ secrets.APT_SSH_HOST }}
+          SSH_USER: ${{ secrets.APT_SSH_USER }}
+        run: |
+          # Setup SSH
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan "$SSH_HOST" >> ~/.ssh/known_hosts
 
-#  # Build in Fedora COPR
-#  publish-copr:
-#    name: Build in COPR
-#    runs-on: ubuntu-latest
-#    steps:
-#      - name: Install copr-cli
-#        run: |
-#          sudo apt-get update
-#          sudo apt-get install -y python3-pip
-#          pip3 install copr-cli
-#
-#      - name: Configure copr-cli
-#        run: |
-#          mkdir -p ~/.config
-#          cat > ~/.config/copr << EOF
-#          [copr-cli]
-#          login = ${{ secrets.COPR_LOGIN }}
-#          username = tmshlvck
-#          token = ${{ secrets.COPR_TOKEN }}
-#          copr_url = https://copr.fedorainfracloud.org
-#          EOF
-#
-#      - name: Submit COPR build
-#        run: |
-#          # Submit build using spec file URL - COPR downloads sources and builds with network
-#          SPEC_URL="https://raw.githubusercontent.com/tmshlvck/teleddns/${GITHUB_REF_NAME}/teleddns.spec"
-#          copr-cli build tmshlvck/teleddns --nowait "$SPEC_URL"
+          # Upload .deb files
+          scp *.deb "${SSH_USER}@${SSH_HOST}:/tmp/"
+
+          # Add to repository
+          VERSION="${GITHUB_REF_NAME#v}"
+          ssh "${SSH_USER}@${SSH_HOST}" "cd /srv/apt/www && \
+            reprepro includedeb stable /tmp/teleddns_${VERSION}_amd64.deb && \
+            reprepro includedeb stable /tmp/teleddns_${VERSION}_arm64.deb && \
+            reprepro includedeb stable /tmp/teleddns_${VERSION}_armhf.deb && \
+            reprepro includedeb stable /tmp/teleddns_${VERSION}_riscv64.deb && \
+            rm /tmp/teleddns_${VERSION}_*.deb"
+
+  # Build in Fedora COPR
+  publish-copr:
+    name: Build in COPR
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install copr-cli
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pip
+          pip3 install copr-cli
+
+      - name: Configure copr-cli
+        run: |
+          mkdir -p ~/.config
+          cat > ~/.config/copr << EOF
+          [copr-cli]
+          login = ${{ secrets.COPR_LOGIN }}
+          username = tmshlvck
+          token = ${{ secrets.COPR_TOKEN }}
+          copr_url = https://copr.fedorainfracloud.org
+          EOF
+
+      - name: Submit COPR build
+        run: |
+          # Submit build using spec file URL - COPR downloads sources and builds with network
+          SPEC_URL="https://raw.githubusercontent.com/tmshlvck/teleddns/${GITHUB_REF_NAME}/teleddns.spec"
+          copr-cli build tmshlvck/teleddns --nowait "$SPEC_URL"
