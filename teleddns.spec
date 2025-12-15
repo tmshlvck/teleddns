@@ -13,7 +13,7 @@ Summary:        Advanced DDNS client with Netlink support
 
 License:        GPL-3.0-or-later
 URL:            https://github.com/tmshlvck/teleddns
-Source0:        https://github.com/tmshlvck/teleddns/releases/download/v%{version}/teleddns-%{version}.tar.gz
+Source0:        https://github.com/tmshlvck/teleddns/archive/refs/tags/v%{version}.tar.gz
 
 BuildRequires:  rust >= 1.77
 BuildRequires:  cargo

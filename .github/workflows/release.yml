@@ -134,6 +134,7 @@ jobs:
   # Build in Fedora COPR
   publish-copr:
     name: Build in COPR
+    needs: github-release
     runs-on: ubuntu-latest
     steps:
       - name: Install copr-cli
