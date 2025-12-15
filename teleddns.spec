@@ -7,7 +7,7 @@
 # COPR builds from this spec file with network access enabled.
 
 Name:           teleddns
-Version:        0.1.14
+Version:        0.2.0
 Release:        1%{?dist}
 Summary:        Advanced DDNS client with Netlink support
 
@@ -91,6 +91,13 @@ fi
 %dir %{_sysconfdir}/teleddns
 
 %changelog
+* Mon Dec 15 2025 Tomas Hlavacek <tmshlvck@gmail.com> - 0.2.0-1
+- Major version bump to v0.2.0
+- CI/CD improvements: GitHub Actions pipeline fixes, COPR build enhancements
+- Packaging: deb builds for multiple architectures (amd64, arm64, armhf, riscv64)
+- Build system: cross-compilation fixes, vendor tarball improvements
+- Debian/Ubuntu repository integration
+
 * Mon Dec 15 2025 Tomas Hlavacek <tmshlvck@gmail.com> - 0.1.14-1
 - Version bump
 
