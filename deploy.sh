@@ -94,11 +94,11 @@ install_apt() {
 
     # Add GPG key
     info "Adding repository GPG key..."
-    curl -fsSL https://apt.telephant.eu/pubkey.gpg | sudo gpg --dearmor -o /usr/share/keyrings/telephant.gpg
+    curl -fsSL https://apt.telephant.eu/teleddns/pubkey.gpg | sudo gpg --dearmor -o /usr/share/keyrings/teleddns.gpg
 
     # Add repository
     info "Adding APT repository..."
-    echo "deb [signed-by=/usr/share/keyrings/telephant.gpg] https://apt.telephant.eu stable main" | sudo tee /etc/apt/sources.list.d/telephant.list > /dev/null
+    echo "deb [signed-by=/usr/share/keyrings/teleddns.gpg] https://apt.telephant.eu/teleddns/ stable main" | sudo tee /etc/apt/sources.list.d/teleddns.list > /dev/null
 
     # Install package
     info "Installing teleddns package..."

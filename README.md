@@ -42,13 +42,13 @@ sudo journalctl -u teleddns -f
 
 * [crates.io](https://crates.io/crates/teleddns) - use `cargo install teleddns`
 * [Fedora COPR](https://copr.fedorainfracloud.org/coprs/tmshlvck/teleddns/package/teleddns/) - use `dnf copr enable tmshlvck/teleddns`
-* [Debian/Ubuntu APT](https://apt.telephant.eu) - see [installation instructions](https://apt.telephant.eu/INSTALL-DEB.txt)
+* [Debian/Ubuntu APT](https://apt.telephant.eu/teleddns/) - see [installation instructions](https://apt.telephant.eu/teleddns/INSTALL-DEB.txt)
 
 #### Debian/Ubuntu (APT)
 
 ```bash
-curl -fsSL https://apt.telephant.eu/pubkey.gpg | sudo gpg --dearmor -o /usr/share/keyrings/telephant.gpg
-echo "deb [signed-by=/usr/share/keyrings/telephant.gpg] https://apt.telephant.eu stable main" | sudo tee /etc/apt/sources.list.d/telephant.list
+curl -fsSL https://apt.telephant.eu/teleddns/pubkey.gpg | sudo gpg --dearmor -o /usr/share/keyrings/teleddns.gpg
+echo "deb [signed-by=/usr/share/keyrings/teleddns.gpg] https://apt.telephant.eu/teleddns/ stable main" | sudo tee /etc/apt/sources.list.d/teleddns.list
 sudo apt update
 sudo apt install teleddns
 ```
