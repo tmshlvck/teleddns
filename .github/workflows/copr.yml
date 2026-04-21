@@ -1,0 +1,54 @@
+name: Build in COPR
+
+on:
+  push:
+    tags:
+      - v[0-9]+.*
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Git tag to build (e.g. v0.1.14)'
+        required: true
+        type: string
+
+jobs:
+  publish-copr:
+    name: Build in COPR
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install copr-cli
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pip
+          pip3 install copr-cli
+
+      - name: Configure copr-cli
+        run: |
+          mkdir -p ~/.config
+          cat > ~/.config/copr << EOF
+          [copr-cli]
+          login = ${{ secrets.COPR_LOGIN }}
+          username = tmshlvck
+          token = ${{ secrets.COPR_TOKEN }}
+          copr_url = https://copr.fedorainfracloud.org
+          EOF
+
+      - name: Submit COPR build
+        run: |
+          # Submit build using spec file URL - COPR downloads sources and builds with network
+          SPEC_URL="https://raw.githubusercontent.com/tmshlvck/teleddns/${{ steps.tag.outputs.tag }}/teleddns.spec"
+          copr-cli build tmshlvck/teleddns --nowait \
+            -r fedora-43-x86_64 \
+            -r fedora-43-aarch64 \
+            -r fedora-44-x86_64 \
+            -r fedora-44-aarch64 \
+            "$SPEC_URL"

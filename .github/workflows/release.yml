@@ -131,31 +131,5 @@ jobs:
             ssh "${SSH_USER}@${SSH_HOST}" "cd /srv/apt/www && reprepro includedeb trixie /tmp/$deb && reprepro includedeb noble /tmp/$deb && rm /tmp/$deb"
           done
 
-  # Build in Fedora COPR
-  publish-copr:
-    name: Build in COPR
-    needs: github-release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Install copr-cli
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3-pip
-          pip3 install copr-cli
-
-      - name: Configure copr-cli
-        run: |
-          mkdir -p ~/.config
-          cat > ~/.config/copr << EOF
-          [copr-cli]
-          login = ${{ secrets.COPR_LOGIN }}
-          username = tmshlvck
-          token = ${{ secrets.COPR_TOKEN }}
-          copr_url = https://copr.fedorainfracloud.org
-          EOF
-
-      - name: Submit COPR build
-        run: |
-          # Submit build using spec file URL - COPR downloads sources and builds with network
-          SPEC_URL="https://raw.githubusercontent.com/tmshlvck/teleddns/${GITHUB_REF_NAME}/teleddns.spec"
-          copr-cli build tmshlvck/teleddns --nowait "$SPEC_URL"
+  # Note: COPR builds are handled in .github/workflows/copr.yml (also triggered
+  # on tag push, plus manually via workflow_dispatch).
