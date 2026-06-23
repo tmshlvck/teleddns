@@ -1,1 +1,4 @@
+/teleddns
+/dist/
+*.test
 /target
