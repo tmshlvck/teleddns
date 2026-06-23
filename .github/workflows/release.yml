@@ -1,9 +1,11 @@
 name: Release
 
+# NOTE: Automatic tag-triggered releases are disabled on the Go-port branch.
+# This pipeline still builds the Rust crate (crates.io, cargo-deb, cargo-zigbuild)
+# and must be reworked for Go before re-enabling. Until then it can only be run
+# manually via workflow_dispatch.
 on:
-  push:
-    tags:
-      - v[0-9]+.*
+  workflow_dispatch:
 
 permissions:
   contents: write

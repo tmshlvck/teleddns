@@ -1,9 +1,9 @@
 name: Build in COPR
 
+# NOTE: Automatic tag-triggered builds are disabled on the Go-port branch.
+# The Rust packaging/CI infrastructure must be reworked for Go before
+# re-enabling. Until then this workflow can only be run manually.
 on:
-  push:
-    tags:
-      - v[0-9]+.*
   workflow_dispatch:
     inputs:
       tag:
