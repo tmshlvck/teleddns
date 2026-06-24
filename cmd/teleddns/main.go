@@ -1,14 +1,17 @@
 // Command teleddns is the teleddns-go dynamic DNS client.
 //
-// Milestone 1: open an rtnetlink observer, dump current links and addresses,
-// then log every subsequent link/address change. No filtering, selection,
-// DDNS push, or hooks yet — see PRD.md.
+// Milestone 2: the netlink observer is now a functional DDNS client. It filters
+// interfaces, scores each address by metric, selects the best per family, and
+// pushes it to the teleddns-server, rate-limited to one cycle per 30s. Hooks
+// (nftables sets, shell) run on every observed state change. See PRD.md.
 package main
 
 import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
+	"net/netip"
 	"os"
 	"os/signal"
 	"strconv"
@@ -16,14 +19,23 @@ import (
 
 	"github.com/tmshlvck/teleddns-go/internal/applog"
 	"github.com/tmshlvck/teleddns-go/internal/config"
+	"github.com/tmshlvck/teleddns-go/internal/daemon"
+	"github.com/tmshlvck/teleddns-go/internal/ddns"
+	"github.com/tmshlvck/teleddns-go/internal/hooks"
 	"github.com/tmshlvck/teleddns-go/internal/observe"
+	"github.com/tmshlvck/teleddns-go/internal/state"
 	"github.com/tmshlvck/teleddns-go/internal/watch"
 )
 
 // version is overridable at build time with -ldflags "-X main.version=...".
-var version = "0.1.0-m1"
+var version = "0.2.0-m2"
 
 const defaultConfigPath = "/etc/teleddns/teleddns.yaml"
+
+// updateBuffer bounds how many rebuilt maps can queue while the worker is busy
+// pushing (network I/O can take up to the DDNS timeout). The worker coalesces,
+// so a small buffer is plenty.
+const updateBuffer = 16
 
 // countFlag is a repeatable boolean flag: each occurrence increments it,
 // giving the `-v -v` / `-q` verbosity behavior of the Rust client.
@@ -84,8 +96,53 @@ func run() int {
 	}
 	logger.Info("teleddns-go starting",
 		"version", version, "config", cfgPath, "mode", mode,
-		"interfaces", cfg.Interfaces)
+		"interfaces", cfg.Interfaces, "enable_ipv6", cfg.EnableIPv6, "enable_ipv4", cfg.EnableIPv4)
 
+	// SIGINT, SIGTERM and SIGHUP all initiate graceful shutdown. The Rust
+	// client only honored SIGHUP; the Go port handles all three.
+	ctx, stop := signal.NotifyContext(context.Background(),
+		syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer stop()
+
+	if oneshot {
+		return runOneshot(ctx, cfg, logger)
+	}
+	return runDaemon(ctx, cfg, logger)
+}
+
+// runOneshot builds the current state once, runs hooks, and pushes the best
+// per-family address, then exits. It returns non-zero if a push failed so the
+// mode is usable from cron.
+func runOneshot(ctx context.Context, cfg *config.Config, logger *slog.Logger) int {
+	m, err := state.Dump(cfg)
+	if err != nil {
+		logger.Error("state build failed", "err", err)
+		return 1
+	}
+	logger.Info("address state", "addresses", m.Summary())
+	hooks.Apply(ctx, m, cfg)
+
+	best6, best4 := m.SelectBest(cfg)
+	logger.Info("selected best addresses", "best6", addrOrNone(best6), "best4", addrOrNone(best4))
+
+	client := ddns.New(cfg)
+	rc := 0
+	if best6.IsValid() {
+		if err := client.Push(ctx, best6); err != nil {
+			rc = 1
+		}
+	}
+	if best4.IsValid() {
+		if err := client.Push(ctx, best4); err != nil {
+			rc = 1
+		}
+	}
+	return rc
+}
+
+// runDaemon watches netlink for changes, rebuilds the address map on every
+// change, and feeds the rate-limited update worker.
+func runDaemon(ctx context.Context, cfg *config.Config, logger *slog.Logger) int {
 	w := watch.New()
 	dump, err := w.Dump()
 	if err != nil {
@@ -104,23 +161,30 @@ func run() int {
 	}
 	logger.Info("initial state dump complete", "links", links, "addresses", addrs)
 
-	if oneshot {
-		logger.Info("oneshot mode: state dumped, exiting")
-		return 0
+	// Start the update worker and prime it with the initial state so a first
+	// push happens without waiting for an external change.
+	updates := make(chan state.Map, updateBuffer)
+	worker := daemon.NewWorker(cfg)
+	workerDone := make(chan struct{})
+	go func() {
+		defer close(workerDone)
+		worker.Run(ctx, updates)
+	}()
+
+	if m, err := state.Dump(cfg); err != nil {
+		logger.Error("initial state build failed", "err", err)
+	} else {
+		updates <- m
 	}
 
-	// SIGINT, SIGTERM and SIGHUP all initiate graceful shutdown. The Rust
-	// client only honored SIGHUP; the Go port handles all three.
-	ctx, stop := signal.NotifyContext(context.Background(),
-		syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
-	defer stop()
-
-	done := make(chan struct{})
-	events, err := w.Subscribe(done)
+	evDone := make(chan struct{})
+	events, err := w.Subscribe(evDone)
 	if err != nil {
 		logger.Error("netlink subscription failed", "err", err,
 			"hint", "multicast subscription needs CAP_NET_ADMIN or root")
-		close(done)
+		close(evDone)
+		close(updates)
+		<-workerDone
 		return 1
 	}
 	logger.Info("watching netlink events; send SIGINT/SIGTERM/SIGHUP to stop")
@@ -134,12 +198,31 @@ func run() int {
 				running = false
 				break
 			}
-			observe.Print(logger, e)
+			logger.Debug("netlink event", "kind", string(e.Kind))
+			m, err := state.Dump(cfg)
+			if err != nil {
+				logger.Error("state build failed", "err", err)
+				continue
+			}
+			select {
+			case updates <- m:
+			case <-ctx.Done():
+				running = false
+			}
 		}
 	}
 
 	logger.Info("signal received, shutting down")
-	close(done)
+	close(evDone)
+	close(updates)
+	<-workerDone
 	logger.Info("shutdown complete")
 	return 0
+}
+
+func addrOrNone(a netip.Addr) string {
+	if !a.IsValid() {
+		return "none"
+	}
+	return a.String()
 }

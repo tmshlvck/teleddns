@@ -170,10 +170,26 @@ name collision with the imported `github.com/vishvananda/netlink` package. The
 library hides the raw socket and message decoding, so `socket.go` / `dump.go`
 collapse into `watch.go`.
 
-## Milestone 2 — Filtering, selection, DDNS push
+## Milestone 2 — Filtering, selection, DDNS push  ✅ DONE
 
 **Goal:** turn the observer into a functional DDNS client. Match the Rust
 client's externally-visible behavior on the happy path.
+
+**Status:** implemented. Packages added: `internal/filter`, `internal/metric`,
+`internal/state`, `internal/ddns`, `internal/hooks`, `internal/daemon`.
+`cmd/teleddns/main.go` wires the watcher trigger to a fresh state rebuild on
+every change, feeding a rate-limited update worker. Notes on intentional
+deviations from the Rust client:
+
+- `SelectBest` breaks metric ties deterministically (smaller address wins) and
+  `nft` set output is sorted, where the Rust client relies on nondeterministic
+  map iteration order. (Per the PRD's own "minor weakness worth fixing" note.)
+- `--oneshot` returns a non-zero exit code if a DDNS push fails (Rust always
+  exits 0), so the mode is usable from cron.
+- First daemon push happens ~30s after startup (the dampening window), matching
+  the Rust worker's timing exactly.
+- Live netlink events are logged at Debug; the operator-facing Info logs are the
+  state summary, selected best per family, and the sanitized push URL + status.
 
 ### Scope
 
