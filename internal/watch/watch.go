@@ -143,5 +143,6 @@ func (w *Watcher) addrState(ifindex int, ipnet net.IPNet, scope, flags int) Addr
 		Family:    family(ipnet.IP),
 		Scope:     scopeName(scope),
 		Flags:     decodeAddrFlags(flags),
+		FlagBits:  flags,
 	}
 }

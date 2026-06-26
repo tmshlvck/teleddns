@@ -67,7 +67,8 @@ func (w *Worker) Run(ctx context.Context, updates <-chan state.Map) {
 			newMap, haveNew = m, true
 			if elapsed := time.Since(iterationStart); elapsed < MinUpdateInterval {
 				nextTimeout = MinUpdateInterval - elapsed + time.Second
-				slog.Debug("dampening change", "elapsed", elapsed.Round(time.Second), "next_in", nextTimeout.Round(time.Second))
+				slog.Debug("rate-limit active, coalescing changes until window expires",
+					"elapsed", elapsed.Round(time.Second), "next_in", nextTimeout.Round(time.Second))
 				continue
 			}
 		case <-timer.C:

@@ -40,6 +40,7 @@ type AddrState struct {
 	Family    string   // "inet" or "inet6"
 	Scope     string   // "global", "link", "host", ...
 	Flags     []string // decoded IFA_F_* names, e.g. ["permanent"]
+	FlagBits  int      // raw IFA_F_* bitmask, for exact change detection
 }
 
 // Event is one observed netlink change. Exactly one of Link or Addr is set,

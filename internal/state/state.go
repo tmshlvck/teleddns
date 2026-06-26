@@ -138,6 +138,17 @@ func (m Map) SelectBest(cfg *config.Config) (best6, best4 netip.Addr) {
 	return best6, best4
 }
 
+// Knows reports whether the map already contains exactly this address (same
+// address, prefix length, and flags). A NEWADDR re-announcement that Knows
+// returns true for cannot change the selection or the derived map, so it can be
+// ignored without rebuilding state — this is the event-level dampening the Rust
+// client performs against its iface_addrs_map. A flag change (e.g. an address
+// becoming IFA_F_DEPRECATED) makes Knows return false so the change is acted on.
+func (m Map) Knows(addr netip.Addr, prefixLen, flags int) bool {
+	d, ok := m[netip.PrefixFrom(addr, prefixLen)]
+	return ok && d.Flags == flags
+}
+
 // Equal reports whether two maps have identical keys and values.
 func (m Map) Equal(other Map) bool {
 	if len(m) != len(other) {

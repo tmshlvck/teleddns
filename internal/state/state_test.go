@@ -90,6 +90,33 @@ func TestSelectBestNoUsableAddrs(t *testing.T) {
 	}
 }
 
+func TestKnows(t *testing.T) {
+	c := cfg()
+	m := Build([]AddrInput{
+		in("eth0", "2a02:169:c33e:1:1266:6aff:fe23:b678", 64, unix.IFA_F_MANAGETEMPADDR|unix.IFA_F_NOPREFIXROUTE),
+		in("eth0", "192.168.1.229", 24, 0),
+	}, c)
+
+	v6 := netip.MustParseAddr("2a02:169:c33e:1:1266:6aff:fe23:b678")
+
+	// Same address, same flags -> known (a SLAAC re-announcement).
+	if !m.Knows(v6, 64, unix.IFA_F_MANAGETEMPADDR|unix.IFA_F_NOPREFIXROUTE) {
+		t.Errorf("expected re-announced address with identical flags to be known")
+	}
+	// Same address, flags changed (now deprecated) -> not known, must act.
+	if m.Knows(v6, 64, unix.IFA_F_MANAGETEMPADDR|unix.IFA_F_NOPREFIXROUTE|unix.IFA_F_DEPRECATED) {
+		t.Errorf("flag change (DEPRECATED) should not be treated as known")
+	}
+	// Different prefix length -> not known.
+	if m.Knows(v6, 128, unix.IFA_F_MANAGETEMPADDR|unix.IFA_F_NOPREFIXROUTE) {
+		t.Errorf("different prefix length should not be known")
+	}
+	// Unknown address -> not known.
+	if m.Knows(netip.MustParseAddr("2a02:169:c33e:1::dead"), 64, 0) {
+		t.Errorf("unseen address should not be known")
+	}
+}
+
 func TestEqual(t *testing.T) {
 	c := cfg()
 	a := Build([]AddrInput{in("eth0", "2606:4700::1111", 64, 0)}, c)

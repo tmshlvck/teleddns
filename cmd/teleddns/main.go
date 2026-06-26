@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/tmshlvck/teleddns-go/internal/applog"
@@ -171,10 +172,16 @@ func runDaemon(ctx context.Context, cfg *config.Config, logger *slog.Logger) int
 		worker.Run(ctx, updates)
 	}()
 
-	if m, err := state.Dump(cfg); err != nil {
+	// known is the last address map we built. It is the table we consult to
+	// decide whether an incoming NEWADDR is a no-op re-announcement (already
+	// known, unchanged flags) and can be ignored without a rebuild — mirroring
+	// the Rust client's iface_addrs_map dampening.
+	known, err := state.Dump(cfg)
+	if err != nil {
 		logger.Error("initial state build failed", "err", err)
+		known = state.Map{}
 	} else {
-		updates <- m
+		updates <- known
 	}
 
 	evDone := make(chan struct{})
@@ -198,12 +205,15 @@ func runDaemon(ctx context.Context, cfg *config.Config, logger *slog.Logger) int
 				running = false
 				break
 			}
-			logger.Debug("netlink event", "kind", string(e.Kind))
+			if ignoreEvent(logger, known, e) {
+				continue
+			}
 			m, err := state.Dump(cfg)
 			if err != nil {
 				logger.Error("state build failed", "err", err)
 				continue
 			}
+			known = m
 			select {
 			case updates <- m:
 			case <-ctx.Done():
@@ -225,4 +235,60 @@ func addrOrNone(a netip.Addr) string {
 		return "none"
 	}
 	return a.String()
+}
+
+// ignoreEvent reports whether a netlink event can be skipped without rebuilding
+// the address map. Mirroring the Rust client, a NEWADDR re-announcement for an
+// address we already track with identical flags (typically a SLAAC address
+// whose lifetime was refreshed by a Router Advertisement) cannot change the
+// selection, so it is logged and ignored. Every other event — a new address, a
+// flag change such as DEPRECATED being set, an address removal, or any link
+// change — triggers a full rebuild.
+func ignoreEvent(logger *slog.Logger, known state.Map, e watch.Event) bool {
+	if e.Kind == watch.EventNewAddr && e.Addr != nil {
+		if addr, ok := netip.AddrFromSlice(e.Addr.IP); ok {
+			addr = addr.Unmap()
+			if known.Knows(addr, e.Addr.PrefixLen, e.Addr.FlagBits) {
+				logger.Debug("update dampened: address already known and unchanged",
+					"addr", fmt.Sprintf("%s/%d", addr, e.Addr.PrefixLen),
+					"iface", addrIface(e.Addr),
+					"flags", orDash(strings.Join(e.Addr.Flags, ",")))
+				return true
+			}
+		}
+	}
+	logEventTrigger(logger, e)
+	return false
+}
+
+// logEventTrigger logs the change that is about to trigger a state rebuild,
+// including the interface and address for address events.
+func logEventTrigger(logger *slog.Logger, e watch.Event) {
+	switch {
+	case e.Addr != nil:
+		logger.Debug("netlink change triggers update",
+			"kind", string(e.Kind),
+			"addr", fmt.Sprintf("%s/%d", e.Addr.IP, e.Addr.PrefixLen),
+			"iface", addrIface(e.Addr),
+			"flags", orDash(strings.Join(e.Addr.Flags, ",")))
+	case e.Link != nil:
+		logger.Debug("netlink change triggers update",
+			"kind", string(e.Kind), "iface", e.Link.Name)
+	default:
+		logger.Debug("netlink change triggers update", "kind", string(e.Kind))
+	}
+}
+
+func addrIface(a *watch.AddrState) string {
+	if a.Name != "" {
+		return a.Name
+	}
+	return fmt.Sprintf("if%d", a.Index)
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }

@@ -190,6 +190,13 @@ deviations from the Rust client:
   the Rust worker's timing exactly.
 - Live netlink events are logged at Debug; the operator-facing Info logs are the
   state summary, selected best per family, and the sanitized push URL + status.
+- Event-level dampening (a slice of M3 pulled forward): a NEWADDR
+  re-announcement for an address already tracked with identical flags is logged
+  ("update dampened: address already known and unchanged") and ignored without
+  rebuilding state, via `state.Map.Knows`. This mirrors the Rust client's
+  iface_addrs_map check and avoids a full netlink re-dump on every SLAAC
+  lifetime refresh. Flag changes (e.g. DEPRECATED being set) are still acted on.
+  The worker's 30s coalescing is a separate, time-based rate limit.
 
 ### Scope
 
