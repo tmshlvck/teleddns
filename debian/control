@@ -10,7 +10,7 @@ Rules-Requires-Root: no
 
 Package: teleddns
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}
+Depends: ${misc:Depends}
 Description: Advanced DDNS client with Netlink support
  TeleDDNS is an advanced dynamic DNS client with daemonization support (as a
  systemd service) or one-shot running capability. In daemon mode it watches

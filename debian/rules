@@ -47,6 +47,14 @@ override_dh_dwz:
 # require the target's binutils (e.g. arm-linux-gnueabihf-strip).
 override_dh_strip:
 
+# The binary is a fully static CGO-free build with no shared-library
+# dependencies, so there is nothing for the shlibs machinery to compute. Skip
+# these steps; they would otherwise need the target's objdump (e.g.
+# aarch64-linux-gnu-objdump), which we don't install for cross builds.
+override_dh_makeshlibs:
+
+override_dh_shlibdeps:
+
 override_dh_auto_clean:
 	rm -f teleddns
 	rm -rf .gocache .gomodcache .gopath
