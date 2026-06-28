@@ -13,15 +13,22 @@ milestone plan.
 
 ## Status
 
-**Milestones 1 & 2 done.** The client opens an rtnetlink observer, filters
-interfaces, scores each address by metric, selects the best per family, and
-pushes it to the teleddns-server over HTTP — rate-limited to one cycle per 30s.
-Hooks (nftables sets, shell) run on every observed state change.
+**Released as v0.3.0** — the first Go release, a drop-in replacement for the
+Rust client (same binary name, config path, and systemd unit).
+
+The client opens an rtnetlink observer, filters interfaces, scores each address
+by metric, selects the best per family, and pushes it to the teleddns-server
+over HTTP — rate-limited to one cycle per 30s. Hooks (nftables sets, shell) run
+on every observed state change. This covers Milestones 1 & 2.
+
+Packaging and CI (Milestone 4) are in place: `.deb` packages for
+`amd64`/`arm64`/`armhf`/`riscv64` (published to the APT repo for Debian trixie
+and Ubuntu noble) and RPMs via COPR for Fedora 43/44/rawhide on
+`x86_64`/`aarch64`. See [`teleddns.spec`](teleddns.spec), [`debian/`](debian),
+and the GitHub Actions workflows.
 
 Milestone 3 (incremental state, dedup, persisted state, backoff) is not started.
-Milestone 4 (RPM/deb packaging and CI for the Go build) is in place: see
-[`teleddns.spec`](teleddns.spec), [`debian/`](debian), and the GitHub Actions
-workflows. See [`PRD.md`](PRD.md) for the full milestone plan.
+See [`PRD.md`](PRD.md) for the full milestone plan.
 
 ## Build
 
