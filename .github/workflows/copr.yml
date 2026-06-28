@@ -34,15 +34,15 @@ jobs:
           pip3 install copr-cli
 
       - name: Configure copr-cli
+        # COPR_TOKEN holds the full ~/.config/copr file downloaded from the COPR
+        # API page (it already contains [copr-cli], login, username, token and
+        # copr_url), so write it out verbatim. Passed via env to handle the
+        # multi-line value safely.
+        env:
+          COPR_TOKEN: ${{ secrets.COPR_TOKEN }}
         run: |
           mkdir -p ~/.config
-          cat > ~/.config/copr << EOF
-          [copr-cli]
-          login = ${{ secrets.COPR_LOGIN }}
-          username = tmshlvck
-          token = ${{ secrets.COPR_TOKEN }}
-          copr_url = https://copr.fedorainfracloud.org
-          EOF
+          printf '%s\n' "$COPR_TOKEN" > ~/.config/copr
 
       - name: Submit COPR build
         run: |

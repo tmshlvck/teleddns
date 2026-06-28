@@ -60,20 +60,21 @@ is_fedora_based() {
     return 1
 }
 
-# Get architecture for binary download
+# Get architecture for binary download. These match the per-arch release
+# assets published by .github/workflows/release.yml (teleddns-<arch>).
 get_binary_target() {
     case "$(uname -m)" in
         x86_64)
-            echo "x86_64-unknown-linux-gnu"
+            echo "amd64"
             ;;
         aarch64)
-            echo "aarch64-unknown-linux-gnu"
+            echo "arm64"
             ;;
         armv7l)
-            echo "armv7-unknown-linux-gnueabihf"
+            echo "armhf"
             ;;
         riscv64)
-            echo "riscv64gc-unknown-linux-gnu"
+            echo "riscv64"
             ;;
         *)
             echo ""
@@ -141,19 +142,19 @@ install_binary() {
         return 1
     fi
 
-    SRC="$SRC_PREFIX/$TELEDDNS_VERSION/teleddns-${TARGET}.tar.gz"
+    SRC="$SRC_PREFIX/$TELEDDNS_VERSION/teleddns-${TARGET}"
     info "Downloading $SRC ..."
 
-    if ! curl -f -o /tmp/teleddns.tar.gz -L "$SRC"; then
+    if ! curl -f -o /tmp/teleddns -L "$SRC"; then
         warn "Failed to download binary for $TARGET"
-        rm -f /tmp/teleddns.tar.gz
+        rm -f /tmp/teleddns
         return 1
     fi
 
     info "Installing binary to /usr/local/bin..."
     sudo mkdir -p /usr/local/bin
-    sudo tar xf /tmp/teleddns.tar.gz -C /usr/local/bin
-    rm -f /tmp/teleddns.tar.gz
+    sudo install -m 755 /tmp/teleddns /usr/local/bin/teleddns
+    rm -f /tmp/teleddns
 
     # Install systemd service for binary installs
     install_systemd_service "/usr/local/bin/teleddns"
@@ -161,53 +162,56 @@ install_binary() {
     return 0
 }
 
-# Install via cargo from crates.io
-install_cargo() {
-    info "Building from crates.io using cargo..."
+# Build from source with the Go toolchain (final fallback)
+install_source() {
+    info "Building from source with Go..."
 
-    # Check if cargo is available
-    if ! command -v cargo &> /dev/null; then
-        error "cargo is not installed. Please install Rust/Cargo first:"
-        echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+    # Check if go is available
+    if ! command -v go &> /dev/null; then
+        error "go is not installed. Please install the Go toolchain first:"
+        echo "  https://go.dev/dl/  (or your distribution's 'golang' package)"
         return 1
     fi
 
-    # Check for OpenSSL development headers
-    if is_debian_based; then
-        if ! dpkg -s libssl-dev &> /dev/null 2>&1; then
-            warn "Installing libssl-dev..."
-            sudo apt-get update
-            sudo apt-get install -y libssl-dev pkg-config
-        fi
-    elif is_fedora_based; then
-        if ! rpm -q openssl-devel &> /dev/null 2>&1; then
-            warn "Installing openssl-devel..."
-            sudo dnf -y install openssl-devel pkg-config
+    # Need git to fetch the source
+    if ! command -v git &> /dev/null; then
+        if is_debian_based; then
+            sudo apt-get update && sudo apt-get install -y git
+        elif is_fedora_based; then
+            sudo dnf -y install git
+        else
+            error "git is not installed and could not be installed automatically."
+            return 1
         fi
     fi
 
-    info "Running cargo install teleddns..."
-    cargo install teleddns
+    BUILD_DIR=$(mktemp -d)
+    info "Cloning source into $BUILD_DIR ..."
+    if ! git clone --depth 1 https://github.com/tmshlvck/teleddns.git "$BUILD_DIR/teleddns"; then
+        error "Failed to clone source repository."
+        rm -rf "$BUILD_DIR"
+        return 1
+    fi
 
-    # Determine cargo bin path
-    CARGO_BIN="${CARGO_HOME:-$HOME/.cargo}/bin/teleddns"
-    if [ ! -f "$CARGO_BIN" ]; then
-        error "Failed to find installed binary at $CARGO_BIN"
+    info "Compiling..."
+    if ! (cd "$BUILD_DIR/teleddns" && CGO_ENABLED=0 go build -trimpath -o teleddns ./cmd/teleddns); then
+        error "Build failed."
+        rm -rf "$BUILD_DIR"
         return 1
     fi
 
     # Copy to system location
     info "Installing binary to /usr/local/bin..."
-    sudo cp "$CARGO_BIN" /usr/local/bin/teleddns
-    sudo chmod +x /usr/local/bin/teleddns
+    sudo install -m 755 "$BUILD_DIR/teleddns/teleddns" /usr/local/bin/teleddns
+    rm -rf "$BUILD_DIR"
 
-    # Install systemd service for cargo installs
+    # Install systemd service for source installs
     install_systemd_service "/usr/local/bin/teleddns"
 
     return 0
 }
 
-# Install systemd service (for binary/cargo installs)
+# Install systemd service (for binary/source installs)
 install_systemd_service() {
     local EXEC_PATH="$1"
     info "Installing systemd service..."
@@ -293,13 +297,13 @@ main() {
         if install_binary; then
             INSTALL_SUCCESS=true
         else
-            warn "Binary download failed, trying cargo build..."
+            warn "Binary download failed, trying source build..."
         fi
     fi
 
-    # Final fallback: cargo build
+    # Final fallback: build from source with Go
     if [ "$INSTALL_SUCCESS" = false ]; then
-        if install_cargo; then
+        if install_source; then
             INSTALL_SUCCESS=true
         else
             error "All installation methods failed!"

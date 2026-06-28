@@ -32,12 +32,16 @@ export GOPATH      := $(CURDIR)/.gopath
 
 override_dh_auto_build:
 	go build -trimpath \
-		-ldflags "-X main.version=$(UPSTREAM_VERSION)" \
+		-ldflags "-s -w -X main.version=$(UPSTREAM_VERSION)" \
 		-o teleddns ./cmd/teleddns
 
 # Tests need a live netlink socket and are exercised in CI on native runners,
 # not during cross packaging.
 override_dh_auto_test:
+
+# Go binaries carry compressed DWARF that dwz cannot process, and we strip
+# debug info at link time (-s -w) anyway, so there is nothing to compress.
+override_dh_dwz:
 
 override_dh_auto_clean:
 	rm -f teleddns

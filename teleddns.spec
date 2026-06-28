@@ -33,6 +33,10 @@ Requires:       systemd
 # COPR builds these two arches natively.
 ExclusiveArch:  x86_64 aarch64
 
+# We strip debug info at link time (-s -w); Go's compressed DWARF also trips up
+# rpm's find-debuginfo, so disable the -debuginfo subpackage.
+%global debug_package %{nil}
+
 %description
 TeleDDNS is an advanced DDNS client with daemonization support (as a systemd
 service) or one-shot running capability. When running in daemon mode, it
@@ -56,7 +60,7 @@ export GOFLAGS=-trimpath
 export CGO_ENABLED=0
 export GOCACHE=%{_builddir}/.gocache
 export GOMODCACHE=%{_builddir}/.gomodcache
-go build -ldflags "-X main.version=%{version}" \
+go build -ldflags "-s -w -X main.version=%{version}" \
     -o teleddns ./cmd/teleddns
 
 # Compress man page
