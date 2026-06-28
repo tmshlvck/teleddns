@@ -1,7 +1,7 @@
 # TeleDDNS Configuration File
 #
 # Copy this file to /etc/teleddns/teleddns.yaml and edit the values below.
-# For more information, see: https://github.com/tmshlvck/teleddns-go
+# For more information, see: https://github.com/tmshlvck/teleddns
 #
 # TeleDDNS is designed to work with teleddns-server:
 # https://github.com/tmshlvck/teleddns-server
