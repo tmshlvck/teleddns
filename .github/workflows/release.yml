@@ -20,6 +20,7 @@ jobs:
     name: Build .deb (${{ matrix.arch }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         arch: [amd64, arm64, armhf, riscv64]
     steps:

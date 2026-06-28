@@ -43,6 +43,10 @@ override_dh_auto_test:
 # debug info at link time (-s -w) anyway, so there is nothing to compress.
 override_dh_dwz:
 
+# The binary is already stripped (-s -w). Skip dh_strip so cross builds do not
+# require the target's binutils (e.g. arm-linux-gnueabihf-strip).
+override_dh_strip:
+
 override_dh_auto_clean:
 	rm -f teleddns
 	rm -rf .gocache .gomodcache .gopath
