@@ -1,85 +1,62 @@
 name: Release
 
-# NOTE: Automatic tag-triggered releases are disabled on the Go-port branch.
-# This pipeline still builds the Rust crate (crates.io, cargo-deb, cargo-zigbuild)
-# and must be reworked for Go before re-enabling. Until then it can only be run
-# manually via workflow_dispatch.
+# Builds the Go binary, packages .deb for all supported architectures, attaches
+# per-arch binaries to a GitHub Release, and publishes the .debs to the APT repo.
+# COPR (Fedora RPM) builds are handled in .github/workflows/copr.yml.
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:
   contents: write
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
-  publish-sources:
-    name: Publish sources to crates.io
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Publish to crates.io
-        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-  # Build .deb packages for multiple architectures
+  # Build .deb packages for multiple architectures. The binary is a static
+  # CGO-free build, so the Go internal linker cross-compiles to every arch with
+  # no C toolchain; debian/rules maps DEB_HOST_ARCH to the right GOARCH.
   build-debs:
     name: Build .deb (${{ matrix.arch }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            arch: amd64
-          - target: aarch64-unknown-linux-gnu
-            arch: arm64
-          - target: armv7-unknown-linux-gnueabihf
-            arch: armhf
-          - target: riscv64gc-unknown-linux-gnu
-            arch: riscv64
+        arch: [amd64, arm64, armhf, riscv64]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Go
+        uses: actions/setup-go@v5
         with:
-          targets: ${{ matrix.target }}
+          go-version-file: go.mod
 
-      - name: Install zig
-        uses: goto-bus-stop/setup-zig@v2
-
-      - name: Install cargo-zigbuild and cargo-deb
+      - name: Install packaging tools
         run: |
-          cargo install cargo-zigbuild
-          cargo install cargo-deb
-
-      - name: Build with zigbuild
-        run: cargo zigbuild --release --target ${{ matrix.target }}
+          sudo apt-get update
+          sudo apt-get install -y debhelper dpkg-dev
 
       - name: Build .deb package
-        run: cargo deb --no-build --target ${{ matrix.target }}
+        run: dpkg-buildpackage -us -uc -b -a ${{ matrix.arch }} -d
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p dist
+          cp ../teleddns_*_${{ matrix.arch }}.deb dist/
+          cp teleddns dist/teleddns-${{ matrix.arch }}
 
       - name: Upload .deb artifact
         uses: actions/upload-artifact@v4
         with:
           name: deb-${{ matrix.arch }}
-          path: target/${{ matrix.target }}/debian/*.deb
-
-      - name: Prepare binary for upload
-        run: |
-          cp target/${{ matrix.target }}/release/teleddns teleddns-${{ matrix.target }}
+          path: dist/*.deb
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
           name: bin-${{ matrix.arch }}
-          path: teleddns-${{ matrix.target }}
+          path: dist/teleddns-${{ matrix.arch }}
 
-  # Create GitHub Release with source tarball and binaries
+  # Create GitHub Release with the per-arch binaries.
   github-release:
     name: Create GitHub Release
     needs: build-debs
@@ -102,7 +79,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Publish to APT repository
+  # Publish to the APT repository (Debian trixie + Ubuntu noble).
   publish-apt:
     name: Publish to APT repo
     needs: build-debs
@@ -132,6 +109,3 @@ jobs:
             scp "$deb" "${SSH_USER}@${SSH_HOST}:/tmp/"
             ssh "${SSH_USER}@${SSH_HOST}" "cd /srv/apt/www/teleddns && reprepro includedeb trixie /tmp/$deb && reprepro includedeb noble /tmp/$deb && rm /tmp/$deb"
           done
-
-  # Note: COPR builds are handled in .github/workflows/copr.yml (also triggered
-  # on tag push, plus manually via workflow_dispatch).

@@ -6,6 +6,11 @@ set -e
 # Create config directory
 mkdir -p /etc/teleddns
 
+# Lock down the state directory (persisted push state; see PRD.md M3)
+if [ -d /var/lib/teleddns ]; then
+    chmod 0750 /var/lib/teleddns
+fi
+
 # Inform user about sample configuration
 if [ ! -f /etc/teleddns/teleddns.yaml ]; then
     echo "TeleDDNS installed. To configure:"

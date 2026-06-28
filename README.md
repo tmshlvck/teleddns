@@ -13,10 +13,15 @@ milestone plan.
 
 ## Status
 
-**Milestone 1 — netlink observer.** The client opens an rtnetlink observer,
-dumps the current links and addresses, and logs every subsequent change.
-Interface filtering, address-metric selection, the DDNS HTTP push, hooks, and
-rate limiting are *not* implemented yet (Milestones 2–3).
+**Milestones 1 & 2 done.** The client opens an rtnetlink observer, filters
+interfaces, scores each address by metric, selects the best per family, and
+pushes it to the teleddns-server over HTTP — rate-limited to one cycle per 30s.
+Hooks (nftables sets, shell) run on every observed state change.
+
+Milestone 3 (incremental state, dedup, persisted state, backoff) is not started.
+Milestone 4 (RPM/deb packaging and CI for the Go build) is in place: see
+[`teleddns.spec`](teleddns.spec), [`debian/`](debian), and the GitHub Actions
+workflows. See [`PRD.md`](PRD.md) for the full milestone plan.
 
 ## Build
 

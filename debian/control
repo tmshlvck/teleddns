@@ -1,0 +1,30 @@
+Source: teleddns
+Section: net
+Priority: optional
+Maintainer: Tomas Hlavacek <tmshlvck@gmail.com>
+Build-Depends: debhelper-compat (= 13),
+               golang-go
+Standards-Version: 4.6.2
+Homepage: https://github.com/tmshlvck/teleddns
+Rules-Requires-Root: no
+
+Package: teleddns
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Advanced DDNS client with Netlink support
+ TeleDDNS is an advanced dynamic DNS client with daemonization support (as a
+ systemd service) or one-shot running capability. In daemon mode it watches
+ the kernel rtnetlink socket for interface and address changes, selects the
+ most appropriate public address per host, and reports it to a teleddns-server
+ over HTTP, pooling updates to minimize both convergence time and resource
+ usage.
+ .
+ Features:
+  - Efficient address change detection via Netlink
+  - Support for both IPv4 and IPv6
+  - Configurable update hooks (nftables sets, shell)
+  - Systemd integration
+ .
+ This package is the Go re-implementation (teleddns-go); it is a drop-in
+ replacement for the earlier Rust build using the same binary name, config
+ path, and systemd unit.

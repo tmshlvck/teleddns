@@ -29,7 +29,9 @@ import (
 )
 
 // version is overridable at build time with -ldflags "-X main.version=...".
-var version = "0.2.0-m2"
+// Packaging (RPM/deb) stamps the package version here; this default is only
+// seen in `go build` / `go run` development builds.
+var version = "0.3.0-dev"
 
 const defaultConfigPath = "/etc/teleddns/teleddns.yaml"
 

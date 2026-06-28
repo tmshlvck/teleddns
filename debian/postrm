@@ -3,7 +3,8 @@ set -e
 
 #DEBHELPER#
 
-# Remove config directory on purge
+# Remove config and state directories on purge
 if [ "$1" = "purge" ]; then
     rm -rf /etc/teleddns
+    rm -rf /var/lib/teleddns
 fi

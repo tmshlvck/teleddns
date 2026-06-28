@@ -1,13 +1,15 @@
 name: Build in COPR
 
-# NOTE: Automatic tag-triggered builds are disabled on the Go-port branch.
-# The Rust packaging/CI infrastructure must be reworked for Go before
-# re-enabling. Until then this workflow can only be run manually.
+# Builds the RPM (from teleddns.spec, which now builds the Go binary) in COPR
+# for Fedora 43/44/rawhide on x86_64 and aarch64.
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Git tag to build (e.g. v0.1.14)'
+        description: 'Git tag to build (e.g. v0.3.0)'
         required: true
         type: string
 

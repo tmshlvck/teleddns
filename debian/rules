@@ -1,0 +1,44 @@
+#!/usr/bin/make -f
+# Build a static Go binary for the host architecture. With CGO disabled the Go
+# internal linker cross-compiles to every arch with no C toolchain. See PRD.md,
+# Milestone 4.
+
+# DEB_HOST_ARCH, ...
+include /usr/share/dpkg/architecture.mk
+
+# Package version (without the Debian revision) -> -X main.version
+UPSTREAM_VERSION := $(shell dpkg-parsechangelog -SVersion | sed 's/-[^-]*$$//')
+
+# Debian arch -> Go GOARCH (+ GOARM for armhf)
+GOARCH_amd64   := amd64
+GOARCH_arm64   := arm64
+GOARCH_armhf   := arm
+GOARCH_riscv64 := riscv64
+GOARM_armhf    := 7
+
+export GOOS        := linux
+export GOARCH      := $(GOARCH_$(DEB_HOST_ARCH))
+export GOARM       := $(GOARM_$(DEB_HOST_ARCH))
+export CGO_ENABLED := 0
+# Let the Go toolchain fetch the version go.mod asks for if golang-go is older.
+export GOTOOLCHAIN := auto
+# Keep all build state inside the build tree (no writes to $HOME).
+export GOCACHE     := $(CURDIR)/.gocache
+export GOMODCACHE  := $(CURDIR)/.gomodcache
+export GOPATH      := $(CURDIR)/.gopath
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	go build -trimpath \
+		-ldflags "-X main.version=$(UPSTREAM_VERSION)" \
+		-o teleddns ./cmd/teleddns
+
+# Tests need a live netlink socket and are exercised in CI on native runners,
+# not during cross packaging.
+override_dh_auto_test:
+
+override_dh_auto_clean:
+	rm -f teleddns
+	rm -rf .gocache .gomodcache .gopath

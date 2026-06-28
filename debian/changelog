@@ -1,0 +1,10 @@
+teleddns (0.3.0) unstable; urgency=medium
+
+  * Port to Go (teleddns-go); drop-in replacement for the Rust package.
+  * Build with the Go toolchain via debhelper instead of cargo-deb/zigbuild.
+  * Build a static binary with CGO disabled; the Go internal linker
+    cross-compiles to every architecture with no C toolchain.
+  * No OpenSSL dependency (Go's TLS is pure Go).
+  * Ship /var/lib/teleddns for the persisted push state; removed on purge.
+
+ -- Tomas Hlavacek <tmshlvck@gmail.com>  Sun, 28 Jun 2026 00:00:00 +0000

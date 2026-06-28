@@ -359,6 +359,131 @@ suppress no-op work.
 - Adding then immediately removing the same address produces zero DDNS
   pushes once the rate-limit window settles.
 
+## Milestone 4 — Packaging & CI for the Go build
+
+**Goal:** rework the RPM spec, the Debian packaging, and the two GitHub
+Actions workflows so they build, package, and publish the **Go** binary
+instead of the Rust crate, preserving the existing distro and architecture
+coverage and the existing publish channels (COPR, the APT repo, GitHub
+Releases). The Go package is a drop-in replacement for the Rust package:
+same binary name, same paths, same systemd unit (see Open question 5).
+
+### Existing coverage to preserve
+
+The Rust pipeline currently produces, and M4 must continue to produce, the
+same target matrix:
+
+- **Fedora (COPR, `tmshlvck/teleddns`)**, via `.github/workflows/copr.yml`:
+  - `fedora-43`, `fedora-44`, `fedora-rawhide`
+  - arches `x86_64`, `aarch64`
+- **Debian/Ubuntu (`.deb`)**, via `.github/workflows/release.yml`:
+  - arches `amd64`, `arm64`, `armhf`, `riscv64`
+  - published with `reprepro` to suites `trixie` (Debian) and `noble`
+    (Ubuntu) on the APT host
+- **GitHub Release**: raw per-arch binaries attached to the tagged release.
+- The Rust path also published source to **crates.io** — this step is
+  **dropped** for the Go port (no Go equivalent is wanted; see below).
+
+### Scope
+
+- **RPM spec (`teleddns.spec`)** — convert from Rust to Go:
+  - `BuildRequires:` `golang >= 1.26` (or `go-toolset` on the Fedora
+    releases that need it) instead of `rust`/`cargo`/`openssl-devel`/`gcc`.
+    Go's TLS is pure-Go, so `openssl-devel` is no longer needed.
+  - `%build`: static `go build` with `CGO_ENABLED=0` and proxy-fetched
+    modules. Set `-trimpath` and stamp the version via
+    `-ldflags "-X main.version=%{version}"`. No `-buildmode=pie`: a DDNS
+    client gains little from ASLR, and dropping PIE lets the Go internal
+    linker build statically with no C toolchain. COPR builds with network,
+    so module proxy fetches (and `GOTOOLCHAIN=auto`) work.
+  - Source layout: the binary builds from `./cmd/teleddns`. Drop the
+    `target/release/teleddns` path; install the `go build -o` output.
+  - Keep `ExclusiveArch: x86_64 aarch64` (Go cross-compiles cleanly, but
+    COPR builds natively per chroot, so this matches the existing arches).
+  - Create `/var/lib/teleddns` in `%install` and own it under `%files`
+    (`%dir %attr(0750,root,root) %{_localstatedir}/lib/teleddns`).
+  - Keep the systemd scriptlets, man page, config dir, and doc installs
+    unchanged.
+  - Update `URL:`/`Source0:` if the canonical repo/tag changes; the
+    module path is `github.com/tmshlvck/teleddns-go` but the package and
+    binary remain `teleddns`.
+- **Debian packaging (`debian/`)** — replace the `cargo-deb`-driven build:
+  - The Rust flow used `cargo-zigbuild` + `cargo deb` and so kept only
+    `postinst`/`prerm`/`postrm` maintainer scripts (the rest of the control
+    metadata was generated from `Cargo.toml`). For Go, add the standard
+    Debian files that were previously synthesized: `debian/control`
+    (Architecture: `any`; no `openssl` dependency; `Depends: ${misc:Depends}`,
+    nothing from `${shlibs:Depends}` since the static Go binary has no
+    dynamic libs), `debian/rules` (static `go build` with the same ldflags;
+    map `DEB_HOST_ARCH` → `GOARCH`/`GOARM` for cross), `debian/changelog`,
+    `debian/install` (binary, unit, sample config), `debian/docs`
+    (`README.md`), `debian/manpages` (`teleddns.1`), `debian/dirs` for
+    `/var/lib/teleddns`, and `debian/source/format` (`3.0 (native)`).
+  - Preserve the existing `postinst`/`prerm`/`postrm` behavior; extend
+    `postrm` to remove `/var/lib/teleddns` on `purge` and `postinst` to set
+    it `0750`.
+  - Cross-compilation for `arm64`/`armhf`/`riscv64`: `CGO_ENABLED=0` +
+    `GOOS=linux` + `GOARCH` (`arm64`, `arm` with `GOARM=7`, `riscv64`) — the
+    Go internal linker builds a static binary with no zig / cross C toolchain
+    needed. Simpler than the Rust `zigbuild` path. No PIE (see RPM note).
+- **`.github/workflows/release.yml`** — rework for Go:
+  - Replace the `dtolnay/rust-toolchain` + zig + `cargo-*` steps with
+    `actions/setup-go` and a single cross-build matrix keyed on `GOARCH`
+    (`amd64`/`arm64`/`arm` GOARM=7/`riscv64`) mapping to deb arches
+    (`amd64`/`arm64`/`armhf`/`riscv64`).
+  - Build `.deb`s with `dpkg-buildpackage` (or `debuild`) from the
+    `debian/` tree, one per arch, since cross-compilation is just env vars.
+  - **Remove** the `publish-sources` (crates.io) job.
+  - Keep `github-release` (attach per-arch binaries) and `publish-apt`
+    (reprepro into `trixie` + `noble`) jobs unchanged in behavior, only
+    re-pointing the artifact names.
+- **`.github/workflows/copr.yml`** — keep the COPR submission flow; it
+  builds from the spec URL, so it needs no Go-specific changes beyond the
+  spec rework above. Confirm the same chroot list
+  (`fedora-{43,44,rawhide}-{x86_64,aarch64}`).
+- **Re-enable triggers:** both workflows were switched to manual-only
+  (`workflow_dispatch`) for the Go-port branch. Once the Go packaging is
+  verified, restore the tag-push (`on: push: tags: ['v*']`) triggers and
+  remove the "disabled on the Go-port branch" notes.
+- **Version stamping:** wire `-V/--version` output to the package version
+  via `-ldflags -X`. Bump to the next version on first Go release.
+
+### Out of scope for M4
+
+- New distributions or architectures beyond the existing set.
+- Reproducible-build attestation / SLSA provenance, signing of artifacts
+  beyond what the APT repo and COPR already do.
+- Migrating the APT repo host or COPR project ownership.
+
+### Acceptance criteria
+
+- A tagged build produces, for the Go binary, RPMs for
+  `fedora-{43,44,rawhide}` × `{x86_64,aarch64}` in COPR and `.deb`s for
+  `{amd64,arm64,armhf,riscv64}` published to `trixie` and `noble`.
+- Installing the Go `.deb`/RPM over an existing Rust install upgrades in
+  place: same `/usr/bin/teleddns`, same `teleddns.service`, existing
+  `/etc/teleddns/teleddns.yaml` preserved, service restarts cleanly.
+- `/var/lib/teleddns` exists after install (0750) and is removed on deb
+  `purge` / rpm uninstall as appropriate.
+- `teleddns -V` reports the packaged version.
+- The crates.io publish step is gone; no Rust toolchain is referenced by
+  either workflow.
+- Both workflows are re-enabled on tag push.
+
+### Files touched
+
+```
+teleddns.spec                   Rust → Go build, /var/lib/teleddns
+debian/control                  new: package metadata (was cargo-deb generated)
+debian/rules                    new: go build + cross via GOARCH
+debian/changelog                new
+debian/install                  new: binary, unit, man, sample config
+debian/dirs                     new: /var/lib/teleddns
+debian/postrm                   extend: purge /var/lib/teleddns
+.github/workflows/release.yml   setup-go matrix, drop crates.io, dpkg-buildpackage
+.github/workflows/copr.yml      confirm chroots, re-enable tag trigger
+```
+
 ## Open questions
 
 1. **EUI-64 vs privacy-extension preference.** *Resolved: match Rust.* The
@@ -372,13 +497,17 @@ suppress no-op work.
 3. **Netlink library.** *Resolved: `github.com/vishvananda/netlink`.* Chosen
    for its ergonomic typed `LinkSubscribe` / `AddrSubscribe` / `LinkList` /
    `AddrList` API. It is pure Go for the rtnetlink paths used here (no cgo).
-4. **State directory path.** Rust client has none. Proposed
-   `/var/lib/teleddns/` for the Go port — confirm before M3.
+4. **State directory path.** *Resolved: `/var/lib/teleddns/`.* The Go port
+   uses `/var/lib/teleddns/state.json` for the M3 persisted push state.
+   Packaging must create the directory (owned by the service user/root,
+   mode 0750) and clean it up on purge.
 5. **Should the Go binary be drop-in name-compatible with the Rust one?**
-   I.e. install as `/usr/bin/teleddns` and use the same systemd unit. If
-   yes, packaging needs to handle the transition (Conflicts: in deb/rpm).
-   If no, pick a different binary name (`teleddns-go`?). Default: drop-in
-   replacement, same binary name.
+   *Resolved: yes, drop-in replacement.* Install as `/usr/bin/teleddns`,
+   reuse the same `teleddns.service` unit, config path
+   (`/etc/teleddns/teleddns.yaml`), and man page. The Go package replaces
+   the Rust package of the same name; no `Conflicts:`/rename is needed
+   because the name and paths are identical (it's an upgrade, not a
+   coexisting package). See Milestone 4 for the packaging rework.
 
 ## References
 

@@ -1,0 +1,3 @@
+teleddns usr/bin
+teleddns.service lib/systemd/system
+teleddns.yaml.sample usr/share/doc/teleddns
