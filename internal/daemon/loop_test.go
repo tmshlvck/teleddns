@@ -298,6 +298,67 @@ func TestLastPushOKTracksSuccessOnly(t *testing.T) {
 	}
 }
 
+// Several reasons to push arriving in one rate-limit window must still produce
+// exactly one attempt per family, reporting the newest address — never one
+// computed from a map that has since been superseded.
+func TestOneAttemptPerCycleRegardlessOfReasons(t *testing.T) {
+	w, rec := newTestWorker(t)
+	updates := runWorker(t, w)
+
+	updates <- Update{Map: mapWith(t, "2606:4700::1111")}
+	if ip := waitPush(t, rec); ip != "2606:4700::1111" {
+		t.Fatalf("initial push = %q", ip)
+	}
+
+	// A netlink change, a resync on a fresh dump, and a re-dump, all inside one
+	// window. They coalesce: newest map wins, the force rides along.
+	updates <- Update{Map: mapWith(t, "2606:4700::1112")}
+	updates <- Update{Map: mapWith(t, "2606:4700::1113"), Force: true}
+	updates <- Update{Map: mapWith(t, "2606:4700::1114")}
+
+	if ip := waitPush(t, rec); ip != "2606:4700::1114" {
+		t.Fatalf("coalesced push = %q, want the newest address 2606:4700::1114", ip)
+	}
+	expectNoPush(t, rec) // not one push per reason
+}
+
+// While a family is backing off, a newer address replaces the pending one. The
+// retry must report the new address, never the stale one that first failed.
+func TestBackoffRetryPushesNewestAddress(t *testing.T) {
+	w, rec := newTestWorker(t)
+	updates := runWorker(t, w)
+
+	rec.fail.Store(true)
+	updates <- Update{Map: mapWith(t, "2606:4700::1111")}
+	if ip := waitPush(t, rec); ip != "fail:2606:4700::1111" {
+		t.Fatalf("first attempt = %q, want a failed push of ...1111", ip)
+	}
+
+	// A new best address arrives mid-backoff.
+	updates <- Update{Map: mapWith(t, "2606:4700::1112")}
+	deadline := time.After(3 * time.Second)
+	for seenNew := false; !seenNew; {
+		select {
+		case ip := <-rec.pushes:
+			switch ip {
+			case "fail:2606:4700::1111":
+				// A retry of the old address that raced our send; keep waiting.
+			case "fail:2606:4700::1112":
+				seenNew = true
+			default:
+				t.Fatalf("unexpected push %q", ip)
+			}
+		case <-deadline:
+			t.Fatal("retry never picked up the new address")
+		}
+	}
+
+	rec.fail.Store(false)
+	if ip := waitPush(t, rec); ip != "2606:4700::1112" {
+		t.Fatalf("recovered push = %q, want the new address, never the stale ...1111", ip)
+	}
+}
+
 func TestBackoffDoublesAndCaps(t *testing.T) {
 	w := &Worker{minInterval: 30 * time.Second, maxBackoff: 15 * time.Minute}
 	for _, tc := range []struct {
