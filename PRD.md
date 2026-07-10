@@ -176,16 +176,22 @@ wasteful. Maintain state incrementally and suppress no-op work.
 - **Update dedup:** hash the sorted derived map and skip the cycle when
   unchanged. Track `last_pushed_v4/v6` and suppress redundant pushes; **persist**
   them to `/var/lib/teleddns/state.json` so a restart loop doesn't hammer the
-  server. *(Done: the keepalive, `resync_interval`, default 24h. A resync is
-  carried as a flag on a freshly dumped map — `daemon.Update.Force` — so a
-  forced push always reports live state rather than a cached selection. The
-  hash-based dedup and the persisted last-pushed state remain outstanding.)*
+  server. *(Done: the keepalive, `resync_interval`, default 24h, measured from
+  the worker's last successful push rather than from a fixed tick, so an
+  ordinary change resets it. A resync is carried as a flag on a freshly dumped
+  map — `daemon.Update.Force` — so a forced push always reports live state
+  rather than a cached selection. The hash-based dedup and the persisted
+  last-pushed state remain outstanding.)*
 - **Hook dedup:** hash the nft sets output and only write the file (and run the
   shell hook) when content changed.
 - **Netlink robustness:** detect `ENOBUFS` (kernel dropped messages) and
   re-dump immediately; raise `SO_RCVBUF`; handle multipart dump responses.
 - **DDNS backoff:** exponential per-family backoff capped ~15min, reset on
   success. (The 30s minimum interval is a rate limit, not a failure backoff.)
+  *(Done: `famState.failures`/`nextAttempt` in the worker. The first retry waits
+  MinUpdateInterval and doubles to MaxBackoff. Backoff persists across an
+  address change — it tracks server health, not the address — so a new address
+  discovered during an outage still waits out the current delay.)*
 - **Observability (optional, behind a flag):** per-RTM-kind event counts, cycle
   timing, last successful push timestamp — via Prometheus `/metrics` on
   localhost or a `SIGUSR1` log dump.

@@ -189,14 +189,21 @@ Two periodic tasks run on top of that, both configurable in `teleddns.yaml`:
 
 | Key | Default | Purpose |
 |-----|---------|---------|
-| `resync_interval` | `24h` | Re-send the update even when the address is unchanged, repairing a record the server lost. |
+| `resync_interval` | `24h` | Re-send the update when nothing has been pushed for this long, repairing a record the server lost. |
 | `redump_interval` | `15m` | Rebuild the address table from a full kernel dump, in case a netlink message was dropped. |
 
 Set either to `0s` to disable it (a bare `0` is not accepted — durations are
-written as `24h`, `15m`, `30s`). A resync always re-reads the addresses from the
+written as `24h`, `15m`, `30s`).
+
+The resync is a deadline, not a fixed tick: it measures time since the last
+*successful* push, so an ordinary address change resets it and a busy host never
+sends a redundant keepalive. A resync always re-reads the addresses from the
 kernel before reporting them, so a keepalive can never publish a stale address.
 
-If an update fails, it is retried on the next 30-second cycle until it succeeds.
+A failed update is retried with exponential backoff, per address family:
+30 seconds after the first failure, doubling to a maximum of 15 minutes, reset
+on the first success. A failing IPv4 server therefore never delays IPv6 updates,
+or vice versa.
 
 ## Author
 

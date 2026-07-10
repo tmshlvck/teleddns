@@ -44,6 +44,11 @@ const defaultConfigPath = "/etc/teleddns/teleddns.yaml"
 // so a small buffer is plenty.
 const updateBuffer = 16
 
+// dumpRetryDelay is how soon a resync is retried when the netlink dump it needs
+// fails. Without a dump there is no fresh map, and a keepalive must never push
+// a stale one.
+const dumpRetryDelay = time.Minute
+
 // countFlag is a repeatable boolean flag: each occurrence increments it,
 // giving the `-v -v` / `-q` verbosity behavior of the Rust client.
 type countFlag int
@@ -187,7 +192,10 @@ func runDaemon(ctx context.Context, cfg *config.Config, logger *slog.Logger) int
 		logger.Error("initial state build failed", "err", err)
 		known = state.Map{}
 	} else {
-		updates <- daemon.Update{Map: known}
+		// The resync deadline starts expired: the first push is the startup
+		// resync, performed by the worker's ordinary cycle. Nothing else here
+		// treats startup as a special case.
+		updates <- daemon.Update{Map: known, Force: true}
 	}
 
 	evDone := make(chan struct{})
@@ -236,26 +244,41 @@ func runDaemon(ctx context.Context, cfg *config.Config, logger *slog.Logger) int
 
 	redumpC, stopRedump := ticker(cfg.Redump())
 	defer stopRedump()
-	resyncC, stopResync := ticker(cfg.Resync())
-	defer stopResync()
 
-	// resyncDue survives a failed dump: the keepalive is retried on the next
-	// re-dump tick rather than being skipped until the next resync tick.
-	resyncDue := false
+	// The resync is a deadline, not a tick: it measures time since the last
+	// successful push, whatever caused it, so an address change resets it and a
+	// busy host never sends a redundant keepalive. When the timer fires we ask
+	// the worker when it last succeeded; if that was recent the keepalive is
+	// not due and we simply re-arm for the remainder.
+	resync := cfg.Resync()
+	var resyncC <-chan time.Time
+	var resyncTimer *time.Timer
+	if resync > 0 {
+		resyncTimer = time.NewTimer(resync)
+		resyncC = resyncTimer.C
+		defer resyncTimer.Stop()
+	}
 
 	for running {
 		select {
 		case <-ctx.Done():
 			running = false
 		case <-resyncC:
-			resyncDue = true
+			if remaining := resync - time.Since(worker.LastPushOK()); remaining > 0 {
+				logger.Debug("resync not due, a push already reported this address",
+					"next_in", remaining.Round(time.Second))
+				resyncTimer.Reset(remaining)
+				break
+			}
 			if reconcile(true) {
-				resyncDue = false
+				resyncTimer.Reset(resync)
+			} else {
+				// The dump failed, so there is no fresh map to force a push
+				// with. Retry soon rather than skip a whole resync period.
+				resyncTimer.Reset(dumpRetryDelay)
 			}
 		case <-redumpC:
-			if reconcile(resyncDue) {
-				resyncDue = false
-			}
+			reconcile(false)
 		case e, ok := <-events:
 			if !ok {
 				running = false
@@ -271,8 +294,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, logger *slog.Logger) int
 			}
 			known = m
 			select {
-			case updates <- daemon.Update{Map: m, Force: resyncDue}:
-				resyncDue = false
+			case updates <- daemon.Update{Map: m}:
 			case <-ctx.Done():
 				running = false
 			}

@@ -15,50 +15,76 @@ import (
 )
 
 // testInterval keeps the worker's rate-limit window short enough that a test
-// observes several cycles in well under a second.
-const testInterval = 40 * time.Millisecond
+// observes several cycles in well under a second. testMaxBackoff caps the retry
+// delay proportionally.
+const (
+	testInterval   = 40 * time.Millisecond
+	testMaxBackoff = 200 * time.Millisecond
+)
 
 // pushRecorder is a DDNS server stand-in that reports every myip it is asked to
-// publish and can be switched to failing mid-test.
+// publish and can be switched to failing mid-test, per family.
 type pushRecorder struct {
-	pushes chan string
-	fail   atomic.Bool
+	pushes   chan string
+	fail     atomic.Bool // reject every push
+	failIPv4 atomic.Bool // reject only IPv4 pushes
+}
+
+func (rec *pushRecorder) handle(w http.ResponseWriter, r *http.Request) {
+	ip := r.URL.Query().Get("myip")
+	isV4 := netip.MustParseAddr(ip).Is4()
+	if rec.fail.Load() || (isV4 && rec.failIPv4.Load()) {
+		// Record the attempt even when refusing it, so a test can tell a failed
+		// push apart from no push at all.
+		rec.pushes <- "fail:" + ip
+		http.Error(w, "nope", http.StatusInternalServerError)
+		return
+	}
+	rec.pushes <- ip
+	w.WriteHeader(http.StatusOK)
 }
 
 func newTestWorker(t *testing.T) (*Worker, *pushRecorder) {
 	t.Helper()
-	rec := &pushRecorder{pushes: make(chan string, 16)}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if rec.fail.Load() {
-			http.Error(w, "nope", http.StatusInternalServerError)
-			// Record the attempt even when refusing it, so a test can tell a
-			// failed push apart from no push at all.
-			rec.pushes <- "fail:" + r.URL.Query().Get("myip")
-			return
-		}
-		rec.pushes <- r.URL.Query().Get("myip")
-		w.WriteHeader(http.StatusOK)
-	}))
+	rec := &pushRecorder{pushes: make(chan string, 32)}
+	srv := httptest.NewServer(http.HandlerFunc(rec.handle))
 	t.Cleanup(srv.Close)
 
 	cfg := &config.Config{
 		DDNSURL:    srv.URL + "/ddns/update",
 		Hostname:   "h.example.com",
 		EnableIPv6: true,
+		EnableIPv4: true,
 		Interfaces: []string{"*"},
 	}
-	return &Worker{cfg: cfg, client: ddns.New(cfg), minInterval: testInterval}, rec
+	w := &Worker{
+		cfg:         cfg,
+		client:      ddns.New(cfg),
+		minInterval: testInterval,
+		maxBackoff:  testMaxBackoff,
+		// Keep the slack proportional to minInterval, or an idle cycle would be
+		// dominated by it and expectNoPush would pass without a cycle running.
+		cycleSlack: testInterval / 4,
+	}
+	return w, rec
 }
 
-// mapWith builds an address map holding a single global IPv6 on a wired iface.
-func mapWith(t *testing.T, addr string) state.Map {
+// mapWith builds an address map from global addresses on a wired interface.
+func mapWith(t *testing.T, addrs ...string) state.Map {
 	t.Helper()
-	cfg := &config.Config{EnableIPv6: true, Interfaces: []string{"*"}}
-	m := state.Build([]state.AddrInput{{
-		Iface: "eth0", Addr: netip.MustParseAddr(addr), PrefixLen: 64,
-	}}, cfg)
-	if len(m) != 1 {
-		t.Fatalf("built map has %d entries, want 1", len(m))
+	cfg := &config.Config{EnableIPv6: true, EnableIPv4: true, Interfaces: []string{"*"}}
+	inputs := make([]state.AddrInput, 0, len(addrs))
+	for _, a := range addrs {
+		addr := netip.MustParseAddr(a)
+		plen := 64
+		if addr.Is4() {
+			plen = 24
+		}
+		inputs = append(inputs, state.AddrInput{Iface: "eth0", Addr: addr, PrefixLen: plen})
+	}
+	m := state.Build(inputs, cfg)
+	if len(m) != len(addrs) {
+		t.Fatalf("built map has %d entries, want %d", len(m), len(addrs))
 	}
 	return m
 }
@@ -198,4 +224,97 @@ func TestChangedAddressPushes(t *testing.T) {
 		t.Fatalf("second push = %q", ip)
 	}
 	expectNoPush(t, rec)
+}
+
+// The families are independent: a forced push that IPv4 keeps rejecting must
+// not make IPv6 re-push, and must not stop IPv4 retrying.
+func TestFamiliesAreIndependent(t *testing.T) {
+	w, rec := newTestWorker(t)
+	updates := runWorker(t, w)
+	// A routable v4: documentation and RFC1918 ranges score 0 and are never
+	// selected, so they would give the worker nothing to push.
+	m := mapWith(t, "2606:4700::1111", "9.9.9.9")
+
+	rec.failIPv4.Store(true)
+	updates <- Update{Map: m, Force: true}
+
+	var v6Pushes, v4Failures int
+	deadline := time.After(3 * time.Second)
+	for v4Failures < 3 {
+		select {
+		case ip := <-rec.pushes:
+			switch ip {
+			case "2606:4700::1111":
+				v6Pushes++
+			case "fail:9.9.9.9":
+				v4Failures++
+			default:
+				t.Fatalf("unexpected push %q", ip)
+			}
+		case <-deadline:
+			t.Fatalf("only saw %d IPv4 retries, want 3", v4Failures)
+		}
+	}
+	if v6Pushes != 1 {
+		t.Errorf("IPv6 pushed %d times while IPv4 was failing, want exactly 1", v6Pushes)
+	}
+}
+
+// A successful push must publish its time, since the main loop arms the resync
+// deadline from it. A failed push must not.
+func TestLastPushOKTracksSuccessOnly(t *testing.T) {
+	w, rec := newTestWorker(t)
+	if !w.LastPushOK().IsZero() {
+		t.Fatalf("LastPushOK() = %v before any push, want zero", w.LastPushOK())
+	}
+	updates := runWorker(t, w)
+
+	rec.fail.Store(true)
+	updates <- Update{Map: mapWith(t, "2606:4700::1111")}
+	waitPush(t, rec) // the rejected attempt
+	if !w.LastPushOK().IsZero() {
+		t.Errorf("LastPushOK() = %v after a failed push, want zero", w.LastPushOK())
+	}
+
+	rec.fail.Store(false)
+	before := time.Now()
+	for {
+		if ip := waitPush(t, rec); ip == "2606:4700::1111" {
+			break
+		}
+	}
+	// The stub records the request before responding, so the worker has not
+	// necessarily stored the time yet when waitPush returns. Poll for it.
+	var got time.Time
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		if got = w.LastPushOK(); !got.IsZero() {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// The worker timestamps the cycle, which starts before the round trip.
+	if got.IsZero() || got.Before(before.Add(-time.Second)) {
+		t.Errorf("LastPushOK() = %v, want a time at or after %v", got, before)
+	}
+}
+
+func TestBackoffDoublesAndCaps(t *testing.T) {
+	w := &Worker{minInterval: 30 * time.Second, maxBackoff: 15 * time.Minute}
+	for _, tc := range []struct {
+		failures int
+		want     time.Duration
+	}{
+		{1, 30 * time.Second},
+		{2, time.Minute},
+		{3, 2 * time.Minute},
+		{4, 4 * time.Minute},
+		{5, 8 * time.Minute},
+		{6, 15 * time.Minute}, // 16m capped
+		{7, 15 * time.Minute},
+		{64, 15 * time.Minute}, // would overflow the shift
+	} {
+		if got := w.backoff(tc.failures); got != tc.want {
+			t.Errorf("backoff(%d) = %s, want %s", tc.failures, got, tc.want)
+		}
+	}
 }

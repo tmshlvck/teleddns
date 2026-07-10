@@ -32,10 +32,12 @@ enable_ipv4: false
 report_ipv4_private: false
 report_ipv6_ula: false
 
-# How often to re-send the DDNS update even when the address has not changed.
-# This repairs a record the server lost (zone reset, restore from backup)
-# without waiting for the next address change. Each resync re-reads the current
-# addresses from the kernel first, so it always reports live state.
+# Re-send the DDNS update when nothing has been pushed for this long, even if
+# the address has not changed. This repairs a record the server lost (zone
+# reset, restore from backup) without waiting for the next address change.
+# The deadline is measured from the last successful update, so an address
+# change resets it. Each resync re-reads the current addresses from the kernel
+# first, so it always reports live state.
 # Set to '0s' to disable. Default: 24h.
 #resync_interval: 24h
 

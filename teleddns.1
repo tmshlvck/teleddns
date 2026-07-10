@@ -65,10 +65,12 @@ Enable IPv6 address updates (true/false)
 List of interfaces to monitor. Use '*' for all interfaces.
 .TP
 .B resync_interval
-How often to re-send the DDNS update even when the address has not changed,
-so that a record lost by the server is repaired without waiting for the next
-address change. Every resync re-reads the addresses from the kernel before
-reporting them. Use \fI0s\fR to disable. Default: \fI24h\fR.
+Re-send the DDNS update when no update has succeeded for this long, even if
+the address has not changed, so that a record lost by the server is repaired
+without waiting for the next address change. The deadline is measured from the
+last successful update, so an ordinary address change resets it. Every resync
+re-reads the addresses from the kernel before reporting them. Use \fI0s\fR to
+disable. Default: \fI24h\fR.
 .TP
 .B redump_interval
 How often to rebuild the address table from a full kernel dump, reconciling
@@ -77,6 +79,10 @@ Default: \fI15m\fR.
 .TP
 .B hooks
 Optional list of hooks to execute after address changes.
+.SH RETRIES
+A failed update is retried with exponential backoff, independently for each
+address family: 30 seconds after the first failure, doubling up to a maximum of
+15 minutes, and reset on the first success.
 .SH FILES
 .TP
 .I /etc/teleddns/teleddns.yaml
