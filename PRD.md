@@ -169,13 +169,17 @@ wasteful. Maintain state incrementally and suppress no-op work.
 
 - **Incremental state cache:** apply NewLink/DelLink and NewAddr/DelAddr to
   local tables; recompute the derived map only when a relevant change occurred
-  (ignore link flag changes that don't alter UP/LOWER_UP/RUNNING). Periodic
-  re-sync (default 15min) does a full dump and reconciles, logging
-  discrepancies (dropped multicast messages happen under buffer pressure).
+  (ignore link flag changes that don't alter UP/LOWER_UP/RUNNING). *(Done: the
+  periodic full-dump reconcile, `redump_interval`, default 15min, logging
+  discrepancies. The incremental cache itself is still outstanding — every
+  relevant event rebuilds the map from a full dump.)*
 - **Update dedup:** hash the sorted derived map and skip the cycle when
   unchanged. Track `last_pushed_v4/v6` and suppress redundant pushes; **persist**
   them to `/var/lib/teleddns/state.json` so a restart loop doesn't hammer the
-  server. Add a configurable "force update" / keepalive interval (default 24h).
+  server. *(Done: the keepalive, `resync_interval`, default 24h. A resync is
+  carried as a flag on a freshly dumped map — `daemon.Update.Force` — so a
+  forced push always reports live state rather than a cached selection. The
+  hash-based dedup and the persisted last-pushed state remain outstanding.)*
 - **Hook dedup:** hash the nft sets output and only write the file (and run the
   shell hook) when content changed.
 - **Netlink robustness:** detect `ENOBUFS` (kernel dropped messages) and

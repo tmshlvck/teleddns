@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/tmshlvck/teleddns/internal/applog"
 	"github.com/tmshlvck/teleddns/internal/config"
@@ -169,7 +170,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, logger *slog.Logger) int
 
 	// Start the update worker and prime it with the initial state so a first
 	// push happens without waiting for an external change.
-	updates := make(chan state.Map, updateBuffer)
+	updates := make(chan daemon.Update, updateBuffer)
 	worker := daemon.NewWorker(cfg)
 	workerDone := make(chan struct{})
 	go func() {
@@ -186,7 +187,7 @@ func runDaemon(ctx context.Context, cfg *config.Config, logger *slog.Logger) int
 		logger.Error("initial state build failed", "err", err)
 		known = state.Map{}
 	} else {
-		updates <- known
+		updates <- daemon.Update{Map: known}
 	}
 
 	evDone := make(chan struct{})
@@ -199,12 +200,62 @@ func runDaemon(ctx context.Context, cfg *config.Config, logger *slog.Logger) int
 		<-workerDone
 		return 1
 	}
-	logger.Info("watching netlink events; send SIGINT/SIGTERM/SIGHUP to stop")
+	logger.Info("watching netlink events; send SIGINT/SIGTERM/SIGHUP to stop",
+		"redump_interval", intervalOrOff(cfg.Redump()), "resync_interval", intervalOrOff(cfg.Resync()))
 
-	for running := true; running; {
+	running := true
+
+	// reconcile rebuilds the address map from a full netlink dump and hands it
+	// to the worker. A dump that disagrees with the state the event stream left
+	// us in means the kernel dropped a multicast message — the reason the
+	// periodic re-dump exists — so say so.
+	//
+	// force marks the update as the periodic resync: the worker then re-pushes
+	// even an unchanged address. Because the only way to force a push is to
+	// hand the worker a map, and this map was just dumped, a resync push always
+	// follows a fresh dump and never precedes one.
+	reconcile := func(force bool) (sent bool) {
+		m, err := state.Dump(cfg)
+		if err != nil {
+			logger.Error("periodic re-dump failed", "err", err, "resync_pending", force)
+			return false
+		}
+		if !m.Equal(known) {
+			logger.Warn("re-dump found state the netlink event stream missed",
+				"addresses", m.Summary())
+		}
+		known = m
+		select {
+		case updates <- daemon.Update{Map: m, Force: force}:
+			return true
+		case <-ctx.Done():
+			running = false
+			return false
+		}
+	}
+
+	redumpC, stopRedump := ticker(cfg.Redump())
+	defer stopRedump()
+	resyncC, stopResync := ticker(cfg.Resync())
+	defer stopResync()
+
+	// resyncDue survives a failed dump: the keepalive is retried on the next
+	// re-dump tick rather than being skipped until the next resync tick.
+	resyncDue := false
+
+	for running {
 		select {
 		case <-ctx.Done():
 			running = false
+		case <-resyncC:
+			resyncDue = true
+			if reconcile(true) {
+				resyncDue = false
+			}
+		case <-redumpC:
+			if reconcile(resyncDue) {
+				resyncDue = false
+			}
 		case e, ok := <-events:
 			if !ok {
 				running = false
@@ -220,7 +271,8 @@ func runDaemon(ctx context.Context, cfg *config.Config, logger *slog.Logger) int
 			}
 			known = m
 			select {
-			case updates <- m:
+			case updates <- daemon.Update{Map: m, Force: resyncDue}:
+				resyncDue = false
 			case <-ctx.Done():
 				running = false
 			}
@@ -240,6 +292,24 @@ func addrOrNone(a netip.Addr) string {
 		return "none"
 	}
 	return a.String()
+}
+
+// ticker returns a channel firing every d and a stop function. For d == 0 (the
+// periodic task is disabled) it returns a nil channel, which blocks forever in
+// a select, so callers need no special case.
+func ticker(d time.Duration) (<-chan time.Time, func()) {
+	if d <= 0 {
+		return nil, func() {}
+	}
+	t := time.NewTicker(d)
+	return t.C, t.Stop
+}
+
+func intervalOrOff(d time.Duration) string {
+	if d <= 0 {
+		return "disabled"
+	}
+	return d.String()
 }
 
 // ignoreEvent reports whether a netlink event can be skipped without rebuilding

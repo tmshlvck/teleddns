@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func writeTemp(t *testing.T, content string) string {
@@ -97,5 +98,50 @@ typpo_field: true
 func TestLoadMissingFile(t *testing.T) {
 	if _, err := Load("/nonexistent/teleddns.yaml"); err == nil {
 		t.Fatal("Load accepted missing file, want error")
+	}
+}
+
+const minimalConfig = `
+ddns_url: 'https://u:p@host/ddns/update'
+hostname: 'h.example.com'
+interfaces: ['*']
+`
+
+func TestIntervalDefaults(t *testing.T) {
+	cfg, err := Load(writeTemp(t, minimalConfig))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Resync(); got != DefaultResyncInterval {
+		t.Errorf("Resync() = %s, want %s", got, DefaultResyncInterval)
+	}
+	if got := cfg.Redump(); got != DefaultRedumpInterval {
+		t.Errorf("Redump() = %s, want %s", got, DefaultRedumpInterval)
+	}
+}
+
+func TestIntervalsParsedAndDisabled(t *testing.T) {
+	// `0s`, not a bare `0`: YAML decodes durations from strings only.
+	cfg, err := Load(writeTemp(t, minimalConfig+"resync_interval: 6h\nredump_interval: 0s\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Resync(); got != 6*time.Hour {
+		t.Errorf("Resync() = %s, want 6h", got)
+	}
+	if got := cfg.Redump(); got != 0 {
+		t.Errorf("Redump() = %s, want 0 (disabled)", got)
+	}
+}
+
+func TestIntervalsRejectTooSmallAndNegative(t *testing.T) {
+	for _, tc := range []string{
+		"resync_interval: 5s\n",
+		"redump_interval: 1s\n",
+		"resync_interval: -1h\n",
+	} {
+		if _, err := Load(writeTemp(t, minimalConfig+tc)); err == nil {
+			t.Errorf("Load accepted %q, want error", tc)
+		}
 	}
 }

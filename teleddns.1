@@ -64,6 +64,17 @@ Enable IPv6 address updates (true/false)
 .B interfaces
 List of interfaces to monitor. Use '*' for all interfaces.
 .TP
+.B resync_interval
+How often to re-send the DDNS update even when the address has not changed,
+so that a record lost by the server is repaired without waiting for the next
+address change. Every resync re-reads the addresses from the kernel before
+reporting them. Use \fI0s\fR to disable. Default: \fI24h\fR.
+.TP
+.B redump_interval
+How often to rebuild the address table from a full kernel dump, reconciling
+state left stale by a dropped netlink message. Use \fI0s\fR to disable.
+Default: \fI15m\fR.
+.TP
 .B hooks
 Optional list of hooks to execute after address changes.
 .SH FILES

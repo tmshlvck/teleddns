@@ -180,6 +180,24 @@ teleddns -V                      # print version
 
 `SIGINT`, `SIGTERM` and `SIGHUP` all trigger a graceful shutdown.
 
+## When updates are sent
+
+In daemon mode an update is sent when the selected address changes, and at most
+once per 30 seconds (changes arriving faster are coalesced).
+
+Two periodic tasks run on top of that, both configurable in `teleddns.yaml`:
+
+| Key | Default | Purpose |
+|-----|---------|---------|
+| `resync_interval` | `24h` | Re-send the update even when the address is unchanged, repairing a record the server lost. |
+| `redump_interval` | `15m` | Rebuild the address table from a full kernel dump, in case a netlink message was dropped. |
+
+Set either to `0s` to disable it (a bare `0` is not accepted — durations are
+written as `24h`, `15m`, `30s`). A resync always re-reads the addresses from the
+kernel before reporting them, so a keepalive can never publish a stale address.
+
+If an update fails, it is retried on the next 30-second cycle until it succeeds.
+
 ## Author
 
 Tomas Hlavacek <tmshlvck@gmail.com>
