@@ -1,3 +1,19 @@
+teleddns (0.3.1) unstable; urgency=medium
+
+  * Add resync_interval (default 24h): re-send the DDNS update when nothing
+    has been pushed for that long, repairing a record lost by the server.
+    The deadline is measured from the last successful update, and every
+    resync re-reads the addresses from the kernel before reporting them.
+  * Add redump_interval (default 15m): rebuild the address table from a full
+    kernel dump, reconciling state left stale by a dropped netlink message.
+  * Retry failed updates with exponential backoff, per address family: 30s
+    after the first failure, doubling to 15m, reset on success. Previously a
+    failed update was retried every 31s indefinitely.
+  * Add debian/copyright; the package shipped without license information.
+  * Use "teleddns" as the only project name in output and documentation.
+
+ -- Tomas Hlavacek <tmshlvck@gmail.com>  Fri, 10 Jul 2026 12:00:00 +0000
+
 teleddns (0.3.0) unstable; urgency=medium
 
   * Port to Go; drop-in replacement for the Rust package.

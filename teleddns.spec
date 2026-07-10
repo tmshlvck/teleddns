@@ -12,7 +12,7 @@
 # toolchain auto-download (GOTOOLCHAIN=auto) and module proxy fetches work.
 
 Name:           teleddns
-Version:        0.3.0
+Version:        0.3.1
 Release:        1%{?dist}
 Summary:        Advanced DDNS client with Netlink support
 
@@ -112,6 +112,14 @@ fi
 %dir %attr(0750,root,root) %{_sharedstatedir}/teleddns
 
 %changelog
+* Fri Jul 10 2026 Tomas Hlavacek <tmshlvck@gmail.com> - 0.3.1-1
+- Add resync_interval (default 24h): re-send the update when nothing has been
+  pushed for that long, repairing a record lost by the server
+- Add redump_interval (default 15m): reconcile state left stale by a dropped
+  netlink message
+- Retry failed updates with per-family exponential backoff (30s to 15m)
+- Use "teleddns" as the only project name in output and documentation
+
 * Sun Jun 28 2026 Tomas Hlavacek <tmshlvck@gmail.com> - 0.3.0-1
 - Port to Go; drop-in replacement for the Rust package
 - Build a static Go binary (CGO disabled); no cargo/OpenSSL dependency

@@ -32,10 +32,11 @@ import (
 	"github.com/tmshlvck/teleddns/internal/watch"
 )
 
-// version is overridable at build time with -ldflags "-X main.version=...".
-// Packaging (RPM/deb) stamps the package version here; this default is only
-// seen in `go build` / `go run` development builds.
-var version = "0.3.0-dev"
+// version is overridable at build time with -ldflags "-X main.version=...", as
+// the RPM and deb packaging does. It must track the released version, because a
+// plain `go build` — what the README and deploy.sh tell users to run when no
+// package exists — reports this default verbatim.
+var version = "0.3.1"
 
 const defaultConfigPath = "/etc/teleddns/teleddns.yaml"
 
