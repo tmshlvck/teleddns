@@ -4,8 +4,8 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/tmshlvck/teleddns-go/internal/config"
-	"github.com/tmshlvck/teleddns-go/internal/state"
+	"github.com/tmshlvck/teleddns/internal/config"
+	"github.com/tmshlvck/teleddns/internal/state"
 )
 
 func buildMap(addrs ...string) state.Map {

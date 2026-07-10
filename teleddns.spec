@@ -1,8 +1,8 @@
 # Spec file for Fedora COPR
 #
-# This builds the Go re-implementation (teleddns-go) but installs it under the
-# original name `teleddns` as a drop-in replacement for the Rust package: same
-# binary path, same systemd unit, same config path. See PRD.md, Milestone 4.
+# Since 0.3.0 this builds the Go implementation. It is a drop-in replacement for
+# the earlier Rust package: same binary path, same systemd unit, same config
+# path. See PRD.md, Milestone 4.
 #
 # To build locally:
 #   dnf install golang systemd-rpm-macros
@@ -113,7 +113,7 @@ fi
 
 %changelog
 * Sun Jun 28 2026 Tomas Hlavacek <tmshlvck@gmail.com> - 0.3.0-1
-- Port to Go (teleddns-go); drop-in replacement for the Rust package
+- Port to Go; drop-in replacement for the Rust package
 - Build a static Go binary (CGO disabled); no cargo/OpenSSL dependency
 - Own /var/lib/teleddns for the persisted push state
 

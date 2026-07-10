@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/tmshlvck/teleddns-go/internal/watch"
+	"github.com/tmshlvck/teleddns/internal/watch"
 )
 
 // Print logs a single event: a one-line human summary as the message, plus the

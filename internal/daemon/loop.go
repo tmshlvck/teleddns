@@ -8,10 +8,10 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/tmshlvck/teleddns-go/internal/config"
-	"github.com/tmshlvck/teleddns-go/internal/ddns"
-	"github.com/tmshlvck/teleddns-go/internal/hooks"
-	"github.com/tmshlvck/teleddns-go/internal/state"
+	"github.com/tmshlvck/teleddns/internal/config"
+	"github.com/tmshlvck/teleddns/internal/ddns"
+	"github.com/tmshlvck/teleddns/internal/hooks"
+	"github.com/tmshlvck/teleddns/internal/state"
 )
 
 // MinUpdateInterval is the minimum time between update cycles. Changes arriving

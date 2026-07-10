@@ -1,9 +1,12 @@
-// Command teleddns is the teleddns-go dynamic DNS client.
+// Command teleddns is a dynamic DNS client for teleddns-server.
 //
 // Milestone 2: the netlink observer is now a functional DDNS client. It filters
 // interfaces, scores each address by metric, selects the best per family, and
 // pushes it to the teleddns-server, rate-limited to one cycle per 30s. Hooks
 // (nftables sets, shell) run on every observed state change. See PRD.md.
+//
+// Copyright 2023-2026 Tomas Hlavacek <tmshlvck@gmail.com>
+// SPDX-License-Identifier: GPL-3.0-or-later
 package main
 
 import (
@@ -18,14 +21,14 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/tmshlvck/teleddns-go/internal/applog"
-	"github.com/tmshlvck/teleddns-go/internal/config"
-	"github.com/tmshlvck/teleddns-go/internal/daemon"
-	"github.com/tmshlvck/teleddns-go/internal/ddns"
-	"github.com/tmshlvck/teleddns-go/internal/hooks"
-	"github.com/tmshlvck/teleddns-go/internal/observe"
-	"github.com/tmshlvck/teleddns-go/internal/state"
-	"github.com/tmshlvck/teleddns-go/internal/watch"
+	"github.com/tmshlvck/teleddns/internal/applog"
+	"github.com/tmshlvck/teleddns/internal/config"
+	"github.com/tmshlvck/teleddns/internal/daemon"
+	"github.com/tmshlvck/teleddns/internal/ddns"
+	"github.com/tmshlvck/teleddns/internal/hooks"
+	"github.com/tmshlvck/teleddns/internal/observe"
+	"github.com/tmshlvck/teleddns/internal/state"
+	"github.com/tmshlvck/teleddns/internal/watch"
 )
 
 // version is overridable at build time with -ldflags "-X main.version=...".
@@ -80,7 +83,7 @@ func run() int {
 	}
 
 	if showVer {
-		fmt.Printf("teleddns-go %s\n", version)
+		fmt.Printf("teleddns %s\n", version)
 		return 0
 	}
 
@@ -97,7 +100,7 @@ func run() int {
 	if oneshot {
 		mode = "oneshot"
 	}
-	logger.Info("teleddns-go starting",
+	logger.Info("teleddns starting",
 		"version", version, "config", cfgPath, "mode", mode,
 		"interfaces", cfg.Interfaces, "enable_ipv6", cfg.EnableIPv6, "enable_ipv4", cfg.EnableIPv4)
 

@@ -1,4 +1,4 @@
-module github.com/tmshlvck/teleddns-go
+module github.com/tmshlvck/teleddns
 
 go 1.26.3
 

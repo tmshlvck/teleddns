@@ -7,7 +7,7 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/tmshlvck/teleddns-go/internal/config"
+	"github.com/tmshlvck/teleddns/internal/config"
 )
 
 func TestSanitizeURL(t *testing.T) {

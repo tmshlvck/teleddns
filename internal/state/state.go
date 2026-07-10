@@ -14,9 +14,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tmshlvck/teleddns-go/internal/config"
-	"github.com/tmshlvck/teleddns-go/internal/filter"
-	"github.com/tmshlvck/teleddns-go/internal/metric"
+	"github.com/tmshlvck/teleddns/internal/config"
+	"github.com/tmshlvck/teleddns/internal/filter"
+	"github.com/tmshlvck/teleddns/internal/metric"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )

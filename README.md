@@ -125,7 +125,7 @@ teleddns -o
 The expected output looks like this:
 
 ```
-level=INFO msg="teleddns-go starting" version=0.3.0 config=/etc/teleddns/teleddns.yaml mode=oneshot interfaces=[*] enable_ipv6=true enable_ipv4=false
+level=INFO msg="teleddns starting" version=0.3.0 config=/etc/teleddns/teleddns.yaml mode=oneshot interfaces=[*] enable_ipv6=true enable_ipv4=false
 level=INFO msg="address state" addresses="127.0.0.1/8 iface=lo metric=0; 192.168.1.25/24 iface=enp2s0 metric=0; ::1/128 iface=lo metric=0; 2001:db8:1:2:a8e0:e08:464a:107/64 iface=enp2s0 metric=144; fe80::dd30:e743:84be:2d2a/64 iface=enp2s0 metric=0"
 level=INFO msg="selected best addresses" best6=2001:db8:1:2:a8e0:e08:464a:107 best4=none
 level=INFO msg="sending DDNS update" ip=2001:db8:1:2:a8e0:e08:464a:107 hostname=myhostname.ddns.domain.tld url="https://USERNAME:<PASSWORD>@ddns-server.domain.tld/ddns/update?hostname=myhostname.ddns.domain.tld&myip=2001%3Adb8%3A1%3A2%3Aa8e0%3Ae08%3A464a%3A107"
@@ -180,6 +180,21 @@ teleddns -V                      # print version
 
 `SIGINT`, `SIGTERM` and `SIGHUP` all trigger a graceful shutdown.
 
+## Author
+
+Tomas Hlavacek <tmshlvck@gmail.com>
+
 ## License
 
-GPLv3. See [`LICENSE`](LICENSE).
+Copyright 2023-2026 Tomas Hlavacek.
+
+TeleDDNS is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License, either version 3 of the License, or
+(at your option) any later version (`SPDX-License-Identifier: GPL-3.0-or-later`).
+It is distributed WITHOUT ANY WARRANTY. See [`LICENSE`](LICENSE) for the full
+text.
+
+The released static binaries embed `github.com/vishvananda/netlink` and
+`netns` (Apache-2.0), `golang.org/x/sys` (BSD-3-Clause), and `gopkg.in/yaml.v3`
+(MIT and Apache-2.0), all GPLv3-compatible; their license texts ship with those
+modules.

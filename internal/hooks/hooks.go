@@ -13,8 +13,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tmshlvck/teleddns-go/internal/config"
-	"github.com/tmshlvck/teleddns-go/internal/state"
+	"github.com/tmshlvck/teleddns/internal/config"
+	"github.com/tmshlvck/teleddns/internal/state"
 )
 
 // Apply runs every configured hook against the current address map.

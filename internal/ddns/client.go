@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tmshlvck/teleddns-go/internal/config"
+	"github.com/tmshlvck/teleddns/internal/config"
 )
 
 const (

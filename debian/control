@@ -25,6 +25,6 @@ Description: Advanced DDNS client with Netlink support
   - Configurable update hooks (nftables sets, shell)
   - Systemd integration
  .
- This package is the Go re-implementation (teleddns-go); it is a drop-in
- replacement for the earlier Rust build using the same binary name, config
- path, and systemd unit.
+ Since 0.3.0 the client is implemented in Go; it is a drop-in replacement for
+ the earlier Rust build using the same binary name, config path, and systemd
+ unit.

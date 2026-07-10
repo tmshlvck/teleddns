@@ -1,8 +1,8 @@
-# TeleDDNS Go Client — Design & Roadmap
+# TeleDDNS — Design & Roadmap
 
 ## Overview
 
-**teleddns-go** is a Linux dynamic DNS client that watches the kernel's
+**teleddns** is a Linux dynamic DNS client that watches the kernel's
 `rtnetlink` socket for changes to network interfaces and addresses, selects the
 most appropriate public address per host, and reports it to a
 [teleddns-server](https://github.com/tmshlvck/teleddns-server) over HTTP. It
@@ -13,7 +13,7 @@ canonical implementation in this repository (the Rust source is preserved on the
 `rust` branch and the `v0.2.0` tag). It is a **drop-in replacement**: same binary
 name (`teleddns`), same `/etc/teleddns/teleddns.yaml`, same systemd unit.
 
-- Go module path: `github.com/tmshlvck/teleddns-go`; package/binary: `teleddns`.
+- Go module path: `github.com/tmshlvck/teleddns`; package/binary: `teleddns`.
 
 Goals:
 
