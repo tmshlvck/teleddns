@@ -29,14 +29,9 @@ import (
 	"github.com/tmshlvck/teleddns/internal/hooks"
 	"github.com/tmshlvck/teleddns/internal/observe"
 	"github.com/tmshlvck/teleddns/internal/state"
+	"github.com/tmshlvck/teleddns/internal/version"
 	"github.com/tmshlvck/teleddns/internal/watch"
 )
-
-// version is overridable at build time with -ldflags "-X main.version=...", as
-// the RPM and deb packaging does. It must track the released version, because a
-// plain `go build` — what the README and deploy.sh tell users to run when no
-// package exists — reports this default verbatim.
-var version = "0.3.1"
 
 const defaultConfigPath = "/etc/teleddns/teleddns.yaml"
 
@@ -90,7 +85,7 @@ func run() int {
 	}
 
 	if showVer {
-		fmt.Printf("teleddns %s\n", version)
+		fmt.Printf("teleddns %s\n", version.String())
 		return 0
 	}
 
@@ -108,7 +103,7 @@ func run() int {
 		mode = "oneshot"
 	}
 	logger.Info("teleddns starting",
-		"version", version, "config", cfgPath, "mode", mode,
+		"version", version.String(), "config", cfgPath, "mode", mode,
 		"interfaces", cfg.Interfaces, "enable_ipv6", cfg.EnableIPv6, "enable_ipv4", cfg.EnableIPv4)
 
 	// SIGINT, SIGTERM and SIGHUP all initiate graceful shutdown. The Rust

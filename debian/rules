@@ -6,7 +6,7 @@
 # DEB_HOST_ARCH, ...
 include /usr/share/dpkg/architecture.mk
 
-# Package version (without the Debian revision) -> -X main.version
+# Package version (without the Debian revision) -> stamped into internal/version
 UPSTREAM_VERSION := $(shell dpkg-parsechangelog -SVersion | sed 's/-[^-]*$$//')
 
 # Debian arch -> Go GOARCH (+ GOARM for armhf)
@@ -32,7 +32,7 @@ export GOPATH      := $(CURDIR)/.gopath
 
 override_dh_auto_build:
 	go build -trimpath \
-		-ldflags "-s -w -X main.version=$(UPSTREAM_VERSION)" \
+		-ldflags "-s -w -X github.com/tmshlvck/teleddns/internal/version.version=$(UPSTREAM_VERSION)" \
 		-o teleddns ./cmd/teleddns
 
 # Tests need a live netlink socket and are exercised in CI on native runners,

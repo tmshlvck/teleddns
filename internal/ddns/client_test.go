@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/tmshlvck/teleddns/internal/config"
+	"github.com/tmshlvck/teleddns/internal/version"
 )
 
 func TestSanitizeURL(t *testing.T) {
@@ -35,12 +36,13 @@ func TestSanitizeURL(t *testing.T) {
 }
 
 func TestPushSuccessSendsBasicAuthAndParams(t *testing.T) {
-	var gotUser, gotPass, gotMyip, gotHost string
+	var gotUser, gotPass, gotMyip, gotHost, gotUA string
 	var gotAuthOK bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotUser, gotPass, gotAuthOK = r.BasicAuth()
 		gotMyip = r.URL.Query().Get("myip")
 		gotHost = r.URL.Query().Get("hostname")
+		gotUA = r.Header.Get("User-Agent")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("good"))
 	}))
@@ -60,6 +62,9 @@ func TestPushSuccessSendsBasicAuthAndParams(t *testing.T) {
 	}
 	if gotHost != "host.ddns.example.com" {
 		t.Errorf("hostname = %q", gotHost)
+	}
+	if want := version.UserAgent(); gotUA != want {
+		t.Errorf("User-Agent = %q, want %q", gotUA, want)
 	}
 }
 

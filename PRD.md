@@ -217,7 +217,8 @@ the existing distro/arch coverage and publish channels.
 - **`teleddns.spec`:** build with the Go toolchain (`golang`, `GOTOOLCHAIN=auto`
   so older distro Go fetches the version `go.mod` requires) instead of
   cargo/openssl. Static `CGO_ENABLED=0` build with `-trimpath` and
-  `-ldflags "-s -w -X main.version=%{version}"`; **no PIE** (a DDNS client gains
+  `-ldflags "-s -w -X github.com/tmshlvck/teleddns/internal/version.version=%{version}"`;
+  **no PIE** (a DDNS client gains
   little from ASLR, and dropping it lets the internal linker build statically
   with no C toolchain). `%global debug_package %{nil}` because Go's compressed
   DWARF trips `find-debuginfo`. Owns `/var/lib/teleddns` (0750).

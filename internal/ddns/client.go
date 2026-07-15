@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/tmshlvck/teleddns/internal/config"
+	"github.com/tmshlvck/teleddns/internal/version"
 )
 
 const (
@@ -78,6 +79,7 @@ func (c *Client) Push(ctx context.Context, ip netip.Addr) error {
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}
+	req.Header.Set("User-Agent", version.UserAgent())
 	if hasAuth {
 		req.SetBasicAuth(user, pass)
 	}

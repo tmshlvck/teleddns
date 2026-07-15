@@ -60,7 +60,7 @@ export GOFLAGS=-trimpath
 export CGO_ENABLED=0
 export GOCACHE=%{_builddir}/.gocache
 export GOMODCACHE=%{_builddir}/.gomodcache
-go build -ldflags "-s -w -X main.version=%{version}" \
+go build -ldflags "-s -w -X github.com/tmshlvck/teleddns/internal/version.version=%{version}" \
     -o teleddns ./cmd/teleddns
 
 # Compress man page
