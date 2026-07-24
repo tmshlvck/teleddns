@@ -41,6 +41,7 @@ use tokio::task::JoinSet;
 use tokio::time::{timeout, Duration};
 
 const MIN_UPDATE_INTERVAL_S: u64 = 30;
+const HTTP_TIMEOUT_S: u64 = 30;
 
 const RTNLGRP_LINK: u32 = 1;
 const RTNLGRP_IPV4_IFADDR: u32 = 1 << 4;
@@ -551,61 +552,124 @@ fn sanitize_url(url: &reqwest::Url) -> String {
     u
 }
 
-async fn send_ddns_update(ip: IpAddr, conf: &Config) -> Result<(), String> {
-    info!("Sending DDNS: {:?}", ip);
+/// Classified result of a dyndns2 update request. See DYNDNS2.md for the full
+/// protocol notes and the keyword -> class mapping.
+#[derive(Debug)]
+enum DdnsOutcome {
+    /// Update accepted and applied (`good`).
+    Good,
+    /// Address already current (`nochg`) — treated as success.
+    NoChg,
+    /// Permanent failure — retrying will not help (`badauth`, `nohost`,
+    /// `!yours`, `notfqdn`, `abuse`, ...). Do not spin on it.
+    Permanent(String),
+    /// Transient failure — worth retrying (network/transport error, 5xx,
+    /// `911`/`dnserr`).
+    Transient(String),
+}
 
-    let params = [
-        (
-            "myip",
-            match ip {
-                IpAddr::V6(ip6) => ip6.to_string(),
-                IpAddr::V4(ip4) => ip4.to_string(),
-            },
-        ),
-        ("hostname", conf.hostname.to_string()),
-    ];
-    let url = reqwest::Url::parse_with_params(&conf.ddns_url, &params).expect(
-        format!(
-            "Can not parse URL {} with params {:?}",
-            &conf.ddns_url, &params
-        )
-        .as_str(),
-    );
-    let sanitized_url = sanitize_url(&url);
-    match reqwest::get(url).await {
-        Ok(res) => {
-            let status = res.status();
-            match status {
-                http::StatusCode::OK => {
-                    let rtext = res.text().await;
-                    info!(
-                        "DDNS GET to URL {} succeeded with code: {}, text: {}",
-                        sanitized_url,
-                        status,
-                        rtext.unwrap_or(String::from(""))
-                    );
-                    Ok(())
-                }
-                _ => {
-                    let rtext = res.text().await;
-                    warn!(
-                        "DDNS GET to URL {} failed with code: {}, text: {}",
-                        sanitized_url,
-                        status,
-                        rtext.as_ref().unwrap_or(&String::from(""))
-                    );
-                    Err(format!("Code: {}, text: {:?}", status, &rtext))
-                }
+impl DdnsOutcome {
+    fn is_success(&self) -> bool {
+        matches!(self, DdnsOutcome::Good | DdnsOutcome::NoChg)
+    }
+}
+
+/// Build the shared HTTP client. A stable `User-Agent` is important because some
+/// dyndns2 servers reject a missing/generic UA with `badagent`; the request
+/// timeout keeps a hung server from blocking the update loop.
+fn build_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent(concat!("teleddns/", env!("CARGO_PKG_VERSION")))
+        .timeout(Duration::from_secs(HTTP_TIMEOUT_S))
+        .build()
+        .expect("Failed to build HTTP client")
+}
+
+/// Classify a dyndns2 response. The body's first whitespace-delimited token is
+/// the dyndns2 keyword; we fall back to the HTTP status only for servers that
+/// return an unrecognized or empty body.
+fn classify_ddns_response(status: reqwest::StatusCode, body: &str) -> DdnsOutcome {
+    let keyword = body
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match keyword.as_str() {
+        "good" => DdnsOutcome::Good,
+        "nochg" => DdnsOutcome::NoChg,
+        // Permanent dyndns2 failures — retrying will not help.
+        "nohost" | "notfqdn" | "nofqdn" | "!yours" | "badauth" | "badagent"
+        | "!donator" | "abuse" => DdnsOutcome::Permanent(body.trim().to_string()),
+        // Transient dyndns2 failures — worth retrying.
+        "911" | "dnserr" => DdnsOutcome::Transient(body.trim().to_string()),
+        // Unknown/empty body: decide on the HTTP status instead.
+        _ => {
+            if status.is_success() {
+                DdnsOutcome::Good
+            } else if status.is_server_error()
+                || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+            {
+                DdnsOutcome::Transient(format!("HTTP {} {}", status, body.trim()))
+            } else {
+                DdnsOutcome::Permanent(format!("HTTP {} {}", status, body.trim()))
             }
         }
+    }
+}
+
+async fn send_ddns_update(client: &reqwest::Client, ip: IpAddr, conf: &Config) -> DdnsOutcome {
+    info!("Sending DDNS: {:?}", ip);
+
+    // dyndns2: IPv4 goes in `myip`, IPv6 in `myipv6`.
+    let (ip_param, ip_value) = match ip {
+        IpAddr::V4(ip4) => ("myip", ip4.to_string()),
+        IpAddr::V6(ip6) => ("myipv6", ip6.to_string()),
+    };
+    let params = [(ip_param, ip_value), ("hostname", conf.hostname.clone())];
+    let url = match reqwest::Url::parse_with_params(&conf.ddns_url, &params) {
+        Ok(u) => u,
+        Err(e) => {
+            error!(
+                "Can not parse URL {} with params {:?}: {}",
+                &conf.ddns_url, &params, e
+            );
+            return DdnsOutcome::Permanent(format!("invalid URL: {e}"));
+        }
+    };
+    let sanitized_url = sanitize_url(&url);
+
+    match client.get(url).send().await {
+        Ok(res) => {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            let outcome = classify_ddns_response(status, &body);
+            match &outcome {
+                DdnsOutcome::Good | DdnsOutcome::NoChg => info!(
+                    "DDNS GET to URL {} succeeded: HTTP {}, body: {:?}",
+                    sanitized_url,
+                    status,
+                    body.trim()
+                ),
+                DdnsOutcome::Permanent(m) => warn!(
+                    "DDNS GET to URL {} permanent failure: HTTP {}, {}",
+                    sanitized_url, status, m
+                ),
+                DdnsOutcome::Transient(m) => warn!(
+                    "DDNS GET to URL {} transient failure: HTTP {}, {}",
+                    sanitized_url, status, m
+                ),
+            }
+            outcome
+        }
         Err(err) => {
-            warn!("DDNS GET to URL {} failed: {}", sanitized_url, err);
-            Err(err.to_string())
+            warn!("DDNS GET to URL {} failed (transport): {}", sanitized_url, err);
+            DdnsOutcome::Transient(err.to_string())
         }
     }
 }
 
 async fn update_worker(mut rx: Receiver<HashMap<IfaceIpAddr, IfaceIpAddrData>>, conf: Config) {
+    let client = build_http_client();
     let mut iteration_start = SystemTime::now();
     let mut current_iface_addrs_map = None;
     let (mut current_best4, mut current_best6) = (None, None);
@@ -655,9 +719,11 @@ async fn update_worker(mut rx: Receiver<HashMap<IfaceIpAddr, IfaceIpAddrData>>, 
 
         if pending_best6 != current_best6 {
             if let Some(new_best6_data) = pending_best6 {
-                match send_ddns_update(IpAddr::V6(new_best6_data), &conf).await {
-                    Ok(_) => current_best6 = pending_best6,
-                    Err(_) => (),
+                if send_ddns_update(&client, IpAddr::V6(new_best6_data), &conf)
+                    .await
+                    .is_success()
+                {
+                    current_best6 = pending_best6;
                 }
             } else {
                 current_best6 = None;
@@ -665,9 +731,11 @@ async fn update_worker(mut rx: Receiver<HashMap<IfaceIpAddr, IfaceIpAddrData>>, 
         }
         if pending_best4 != current_best4 {
             if let Some(new_best4_data) = pending_best4 {
-                match send_ddns_update(IpAddr::V4(new_best4_data), &conf).await {
-                    Ok(_) => current_best4 = pending_best4,
-                    Err(_) => (),
+                if send_ddns_update(&client, IpAddr::V4(new_best4_data), &conf)
+                    .await
+                    .is_success()
+                {
+                    current_best4 = pending_best4;
                 }
             } else {
                 current_best4 = None;
@@ -698,12 +766,13 @@ async fn oneshot(conf: &Config) {
 
     apply_hooks(&iface_addrs_map, &conf).await;
 
+    let client = build_http_client();
     let (new_best6, new_best4) = select_best(&iface_addrs_map, conf);
     if let Some(new_best6_data) = new_best6 {
-        let _ = send_ddns_update(IpAddr::V6(new_best6_data), conf).await;
+        let _ = send_ddns_update(&client, IpAddr::V6(new_best6_data), conf).await;
     }
     if let Some(new_best4_data) = new_best4 {
-        let _ = send_ddns_update(IpAddr::V4(new_best4_data), conf).await;
+        let _ = send_ddns_update(&client, IpAddr::V4(new_best4_data), conf).await;
     }
 }
 
@@ -809,4 +878,73 @@ async fn main() {
 
     info!("Sucessfully shutdown");
     std::process::exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::StatusCode;
+
+    #[test]
+    fn classify_success_keywords() {
+        assert!(classify_ddns_response(StatusCode::OK, "good 1.2.3.4").is_success());
+        assert!(classify_ddns_response(StatusCode::OK, "nochg 2a02::1").is_success());
+        // Case-insensitive keyword matching.
+        assert!(classify_ddns_response(StatusCode::OK, "GOOD 1.2.3.4").is_success());
+        // Multi-line body (server sends one line per family) — first token wins.
+        assert!(classify_ddns_response(StatusCode::OK, "good 1.2.3.4\ngood 2a02::1").is_success());
+    }
+
+    #[test]
+    fn classify_permanent_failures() {
+        for body in [
+            "nohost", "notfqdn", "!yours", "badauth", "badagent", "abuse", "!donator",
+        ] {
+            assert!(
+                matches!(
+                    classify_ddns_response(StatusCode::OK, body),
+                    DdnsOutcome::Permanent(_)
+                ),
+                "expected permanent for body {body:?}"
+            );
+        }
+        // teleddns-server returns non-200 for these; the keyword still decides.
+        assert!(matches!(
+            classify_ddns_response(StatusCode::UNAUTHORIZED, "badauth"),
+            DdnsOutcome::Permanent(_)
+        ));
+    }
+
+    #[test]
+    fn classify_transient_failures() {
+        assert!(matches!(
+            classify_ddns_response(StatusCode::OK, "911"),
+            DdnsOutcome::Transient(_)
+        ));
+        assert!(matches!(
+            classify_ddns_response(StatusCode::OK, "dnserr"),
+            DdnsOutcome::Transient(_)
+        ));
+    }
+
+    #[test]
+    fn classify_unknown_body_falls_back_to_status() {
+        // Unknown/empty body with a 2xx is treated as success.
+        assert!(classify_ddns_response(StatusCode::OK, "").is_success());
+        assert!(classify_ddns_response(StatusCode::OK, "{\"detail\":\"whatever\"}").is_success());
+        // 5xx / 429 with an unrecognized body -> transient.
+        assert!(matches!(
+            classify_ddns_response(StatusCode::INTERNAL_SERVER_ERROR, "oops"),
+            DdnsOutcome::Transient(_)
+        ));
+        assert!(matches!(
+            classify_ddns_response(StatusCode::TOO_MANY_REQUESTS, ""),
+            DdnsOutcome::Transient(_)
+        ));
+        // Other 4xx with an unrecognized body -> permanent.
+        assert!(matches!(
+            classify_ddns_response(StatusCode::BAD_REQUEST, "nope"),
+            DdnsOutcome::Permanent(_)
+        ));
+    }
 }
