@@ -19,6 +19,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 use async_process::Command;
 use clap::Parser;
 use futures::stream::{StreamExt, TryStreamExt};
+use humantime::format_duration;
 use log::{debug, error, info, warn};
 use netlink_packet_core::NetlinkPayload::InnerMessage;
 use netlink_packet_route::address::AddressHeader;
@@ -28,7 +29,7 @@ use netlink_packet_route::RouteNetlinkMessage::*;
 use netlink_sys::{AsyncSocket, SocketAddr};
 use rtnetlink::{new_connection, Error, Handle};
 use serde_derive::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::LineWriter;
@@ -38,19 +39,22 @@ use std::time::SystemTime;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::task::JoinSet;
-use tokio::time::{timeout, Duration};
+use tokio::time::Duration;
 
-const MIN_UPDATE_INTERVAL_S: u64 = 30;
-const HTTP_TIMEOUT_S: u64 = 30;
+/// Format a duration for a log line, truncated to whole seconds: sub-second
+/// precision is noise for timers on this scale.
+fn fmt_dur(d: Duration) -> humantime::FormattedDuration {
+    format_duration(Duration::from_secs(d.as_secs()))
+}
 
-/// First retry delay after a transient DDNS failure; doubles up to `RETRY_MAX_S`.
-/// (TODO.md §2 turns these into config keys.)
-const RETRY_MIN_S: u64 = 60;
-const RETRY_MAX_S: u64 = 3600;
-/// `abuse`/HTTP 429 means a rate limit tripped. teleddns-server counts 60 updates
-/// per hour per record set, so the first retry has to be an hour-scale wait --
-/// a minute-scale retry would just trip the limit again.
-const RETRY_RATELIMIT_MIN_S: u64 = 900;
+/// The window the server counts updates in (DYNDNS2.md §10), and therefore the
+/// window our own rate budget slides over.
+const RATE_WINDOW: Duration = Duration::from_secs(3600);
+
+/// What the server permits per hour and family. We do not use it as a target — the
+/// `ddns_max_updates_per_hour` default is half of it — only to warn about a
+/// configuration that cannot possibly stay inside the server's limit.
+const SERVER_UPDATES_PER_HOUR: u32 = 60;
 
 const RTNLGRP_LINK: u32 = 1;
 const RTNLGRP_IPV4_IFADDR: u32 = 1 << 4;
@@ -316,11 +320,40 @@ async fn netlink_events_receiver(
     let mut iface_addrs_map = get_iface_addrs(&handle, &conf).await;
     info!("Trigger the first update");
     debug!("{:?}", iface_addrs_map);
-    tx.send(iface_addrs_map.clone())
-        .await
-        .expect("Failed sending event over MPSC channel");
+    if !publish_addrs(&tx, &iface_addrs_map).await {
+        return;
+    }
 
-    while let Some((nlmsg, _)) = messages.next().await {
+    // Optional belt-and-braces re-dump of the whole address set. Off by default:
+    // netlink notifications are reliable, and a re-dump that finds nothing new costs
+    // one comparison in the worker, not an update.
+    let period = conf.ddns_kernel_poll_period;
+    let mut poll_tick = if period.is_zero() {
+        None
+    } else {
+        info!("Polling the kernel for addresses every {}", fmt_dur(period));
+        Some(tokio::time::interval_at(
+            tokio::time::Instant::now() + period,
+            period,
+        ))
+    };
+
+    'events: loop {
+        let nlmsg = tokio::select! {
+            msg = messages.next() => match msg {
+                Some((nlmsg, _)) => nlmsg,
+                None => break 'events,
+            },
+            _ = next_poll_tick(&mut poll_tick) => {
+                debug!("Periodic kernel address re-dump");
+                iface_addrs_map = get_iface_addrs(&handle, &conf).await;
+                if !publish_addrs(&tx, &iface_addrs_map).await {
+                    break 'events;
+                }
+                continue 'events;
+            }
+        };
+
         debug!("netlink recv: {:?}", nlmsg.payload);
         match nlmsg.payload {
             InnerMessage(NewAddress(nladdrmsg)) => {
@@ -357,9 +390,9 @@ async fn netlink_events_receiver(
                         if addr_changed {
                             iface_addrs_map = get_iface_addrs(&handle, &conf).await;
                             debug!("{:?}", iface_addrs_map);
-                            tx.send(iface_addrs_map.clone())
-                                .await
-                                .expect("Failed sending event over MPSC channel");
+                            if !publish_addrs(&tx, &iface_addrs_map).await {
+                                break 'events;
+                            }
                         }
                     }
                 }
@@ -368,10 +401,38 @@ async fn netlink_events_receiver(
                 debug!("Other type notify -> trigger update");
                 iface_addrs_map = get_iface_addrs(&handle, &conf).await;
                 debug!("{:?}", iface_addrs_map);
-                tx.send(iface_addrs_map.clone())
-                    .await
-                    .expect("Failed sending event over MPSC channel");
+                if !publish_addrs(&tx, &iface_addrs_map).await {
+                    break 'events;
+                }
             }
+        }
+    }
+}
+
+/// Wait for the next kernel re-dump tick, or forever when polling is disabled.
+async fn next_poll_tick(tick: &mut Option<tokio::time::Interval>) {
+    match tick {
+        Some(interval) => {
+            interval.tick().await;
+        }
+        None => std::future::pending().await,
+    }
+}
+
+/// Hand the current address set to the update worker. Returns false when the worker
+/// is gone, which is the receiver's cue to stop as well.
+async fn publish_addrs(
+    tx: &Sender<HashMap<IfaceIpAddr, IfaceIpAddrData>>,
+    addrs: &HashMap<IfaceIpAddr, IfaceIpAddrData>,
+) -> bool {
+    match tx.send(addrs.clone()).await {
+        Ok(()) => true,
+        Err(e) => {
+            error!(
+                "Update worker is gone, stopping the netlink receiver: {}",
+                e
+            );
+            false
         }
     }
 }
@@ -576,7 +637,7 @@ enum DdnsOutcome {
     /// `911`/`dnserr`).
     Transient(String),
     /// Rate limit tripped (`abuse` / HTTP 429) — retryable, but only after a
-    /// long wait, see `RETRY_RATELIMIT_MIN_S`.
+    /// long wait, see `ddns_retry_ratelimit_min`.
     RateLimited(String),
 }
 
@@ -587,10 +648,10 @@ impl DdnsOutcome {
 
     /// Shortest acceptable delay before this failure may be retried. Permanent
     /// failures are never retried, so they have no floor.
-    fn retry_floor_s(&self) -> u64 {
+    fn retry_floor(&self, conf: &Config) -> Duration {
         match self {
-            DdnsOutcome::RateLimited(_) => RETRY_RATELIMIT_MIN_S,
-            _ => RETRY_MIN_S,
+            DdnsOutcome::RateLimited(_) => conf.ddns_retry_ratelimit_min,
+            _ => conf.ddns_retry_min,
         }
     }
 }
@@ -650,10 +711,10 @@ fn validate_hostname(hostname: &str) -> Result<(), String> {
 /// Build the shared HTTP client. A stable `User-Agent` is important because some
 /// dyndns2 servers reject a missing/generic UA with `badagent`; the request
 /// timeout keeps a hung server from blocking the update loop.
-fn build_http_client() -> reqwest::Client {
+fn build_http_client(conf: &Config) -> reqwest::Client {
     reqwest::Client::builder()
         .user_agent(concat!("teleddns/", env!("CARGO_PKG_VERSION")))
-        .timeout(Duration::from_secs(HTTP_TIMEOUT_S))
+        .timeout(conf.http_timeout)
         .build()
         .expect("Failed to build HTTP client")
 }
@@ -777,145 +838,487 @@ async fn send_ddns_update(client: &reqwest::Client, ip: IpAddr, conf: &Config) -
     }
 }
 
-/// Per-family push state. Keeps what the server acknowledged and paces retries as
-/// DYNDNS2.md §12.3 requires: `good`/`nochg` are adopted and not re-sent, transient
-/// failures back off exponentially, and a permanent failure is not retried at all
-/// until the desired address (or the configuration) changes.
+/// Client-side rate governor. teleddns-server allows 60 updates per hour and
+/// address family (DYNDNS2.md §10) and answers `abuse` past that, so we keep our own
+/// budget comfortably below it: a flapping address, a retry loop or a restart loop
+/// must never be able to get us rate limited. The budget only ever *delays* a
+/// request — the pending address is always the latest one, so a burst collapses
+/// into a single update carrying the final value.
+#[derive(Debug)]
+struct RateBudget {
+    min_interval: Duration,
+    max_per_window: u32,
+    /// When we sent, oldest first, pruned to `RATE_WINDOW`.
+    sent: VecDeque<SystemTime>,
+}
+
+impl RateBudget {
+    fn new(conf: &Config) -> Self {
+        RateBudget {
+            min_interval: conf.ddns_min_interval,
+            max_per_window: conf.ddns_max_updates_per_hour,
+            sent: VecDeque::new(),
+        }
+    }
+
+    fn prune(&mut self, now: SystemTime) {
+        while let Some(oldest) = self.sent.front() {
+            match now.duration_since(*oldest) {
+                Ok(age) if age >= RATE_WINDOW => {
+                    self.sent.pop_front();
+                }
+                _ => break,
+            }
+        }
+    }
+
+    /// `None` when a request may go out now, `Some(wait)` when it may not.
+    fn check(&mut self, now: SystemTime) -> Option<Duration> {
+        self.prune(now);
+        if let Some(last) = self.sent.back() {
+            let since = now.duration_since(*last).unwrap_or(Duration::ZERO);
+            if let Some(wait) = self.min_interval.checked_sub(since) {
+                if !wait.is_zero() {
+                    return Some(wait);
+                }
+            }
+        }
+        if self.sent.len() as u32 >= self.max_per_window {
+            // Wait for the oldest send to age out of the window. Never zero, so a
+            // caller that keeps asking cannot spin.
+            let wait = match self.sent.front() {
+                Some(oldest) => {
+                    let age = now.duration_since(*oldest).unwrap_or(Duration::ZERO);
+                    RATE_WINDOW.saturating_sub(age)
+                }
+                None => RATE_WINDOW,
+            };
+            return Some(wait.max(Duration::from_secs(1)));
+        }
+        None
+    }
+
+    fn record(&mut self, now: SystemTime) {
+        self.sent.push_back(now);
+        self.prune(now);
+    }
+}
+
+/// Whether the unconditional re-publish (§6 — the server may have lost or changed
+/// the record without us noticing) is due.
+#[derive(Debug, PartialEq)]
+enum Resync {
+    Disabled,
+    Due,
+    After(Duration),
+}
+
+impl Resync {
+    /// How long until this family wants attention again on account of the resync.
+    fn wake(&self) -> Option<Duration> {
+        match self {
+            Resync::After(d) => Some(*d),
+            // `Due` is only ever observed by a caller that is about to act on it.
+            Resync::Due => Some(Duration::ZERO),
+            Resync::Disabled => None,
+        }
+    }
+}
+
+/// Per-family push state and pacing. Implements DYNDNS2.md §12.3: `good`/`nochg` are
+/// adopted and not re-sent, transient failures back off exponentially, `abuse` backs
+/// off on an hour scale, and a permanent failure is not retried until the address,
+/// the configuration or the resync tick says otherwise — all of it on top of the
+/// rate budget, which no request bypasses.
 #[derive(Debug)]
 struct PushState<A> {
     /// Last value the server acknowledged.
     confirmed: Option<A>,
+    /// When it acknowledged it (persisted, so a restart can adopt it).
+    confirmed_at: Option<SystemTime>,
     /// Value the server rejected permanently — do not send it again.
     rejected: Option<A>,
+    /// Last time we sent anything for this family; drives the resync tick.
+    last_attempt: Option<SystemTime>,
     /// Earliest time a retry may be attempted after a transient failure.
     next_retry: Option<SystemTime>,
-    /// Current back-off; 0 until the first transient failure.
-    backoff_s: u64,
+    /// Current back-off; zero until the first transient failure.
+    backoff: Duration,
+    budget: RateBudget,
 }
 
-// Hand-written so that `A` need not implement `Default` (`Ipv4Addr` does not).
-impl<A> Default for PushState<A> {
-    fn default() -> Self {
+impl<A> PushState<A> {
+    fn new(conf: &Config) -> Self {
         PushState {
             confirmed: None,
+            confirmed_at: None,
             rejected: None,
+            last_attempt: None,
             next_retry: None,
-            backoff_s: 0,
+            backoff: Duration::ZERO,
+            budget: RateBudget::new(conf),
+        }
+    }
+
+    /// Time left until the unconditional re-publish. Counted from the last *attempt*,
+    /// not the last success: that way a name the server keeps refusing is retried
+    /// once per period instead of on every wake-up.
+    fn resync(&self, now: SystemTime, conf: &Config) -> Resync {
+        if conf.ddns_resync_period.is_zero() {
+            return Resync::Disabled;
+        }
+        let Some(last) = self.last_attempt else {
+            return Resync::Due;
+        };
+        // A clock that moved backwards (no RTC, pre-NTP boot) counts as due.
+        let elapsed = now.duration_since(last).unwrap_or(conf.ddns_resync_period);
+        match conf.ddns_resync_period.checked_sub(elapsed) {
+            Some(left) if !left.is_zero() => Resync::After(left),
+            _ => Resync::Due,
         }
     }
 }
 
 impl<A: Copy + PartialEq + Into<IpAddr> + std::fmt::Display> PushState<A> {
-    /// True when the server state already matches what we want to publish.
-    fn is_current(&self, desired: Option<A>) -> bool {
-        self.confirmed == desired
-    }
-
-    /// Push `desired` if it differs from what the server acknowledged and the
-    /// retry policy allows an attempt right now.
-    async fn sync(&mut self, desired: Option<A>, client: &reqwest::Client, conf: &Config) {
-        let Some(addr) = desired else {
-            // Losing an address is not an update: the DDNS endpoint never deletes
-            // a record set (§6). Just forget what we published.
-            self.confirmed = None;
-            self.clear_retry();
-            return;
-        };
-        if self.confirmed == Some(addr) {
-            return;
-        }
-        if self.rejected == Some(addr) {
-            debug!(
-                "Not re-sending {} — the server rejected it permanently",
-                addr
+    /// Adopt an address a previous run had confirmed. Stale state is ignored: it must
+    /// not be able to suppress an update forever if the record changed meanwhile.
+    fn adopt(&mut self, addr: A, confirmed_at: SystemTime, conf: &Config) {
+        let age = SystemTime::now()
+            .duration_since(confirmed_at)
+            .unwrap_or(conf.ddns_resync_period);
+        if !conf.ddns_resync_period.is_zero() && age >= conf.ddns_resync_period {
+            info!(
+                "Not adopting {} from the state file: last confirmed {} ago",
+                addr,
+                fmt_dur(age)
             );
             return;
         }
-        if let Some(next) = self.next_retry {
-            if SystemTime::now() < next {
-                debug!(
-                    "Holding back the update of {} — retry back-off pending",
-                    addr
-                );
-                return;
+        info!(
+            "Adopting {} from the state file (confirmed {} ago)",
+            addr,
+            fmt_dur(age)
+        );
+        self.confirmed = Some(addr);
+        self.confirmed_at = Some(confirmed_at);
+        self.last_attempt = Some(confirmed_at);
+    }
+
+    /// Bring the server in line with `desired`. `forced` (a control-socket
+    /// `send_update`, §8) skips the back-off, but never the rate budget.
+    ///
+    /// Returns how long until this family wants to be looked at again — a pending
+    /// retry, a rate-budget wait or the next resync — or `None` when nothing is
+    /// scheduled and only a new address can change anything.
+    async fn sync(
+        &mut self,
+        desired: Option<A>,
+        forced: bool,
+        client: &reqwest::Client,
+        conf: &Config,
+    ) -> Option<Duration> {
+        let now = SystemTime::now();
+        let Some(addr) = desired else {
+            // Losing an address is not an update: the DDNS endpoint never deletes a
+            // record set (§6). Forget what we published and wait for a new address.
+            if self.confirmed.is_some() {
+                info!("No eligible address left to publish; leaving the record as it is");
+            }
+            self.confirmed = None;
+            self.confirmed_at = None;
+            self.clear_retry();
+            return None;
+        };
+
+        let resync = self.resync(now, conf);
+        let due_resync = resync == Resync::Due;
+        let changed = self.confirmed != Some(addr);
+
+        if !changed && !forced && !due_resync {
+            return resync.wake();
+        }
+        if self.rejected == Some(addr) && !forced && !due_resync {
+            debug!(
+                "Not re-sending {}: the server rejected it permanently",
+                addr
+            );
+            return resync.wake();
+        }
+        if !forced {
+            if let Some(next) = self.next_retry {
+                if let Ok(wait) = next.duration_since(now) {
+                    if !wait.is_zero() {
+                        debug!(
+                            "Holding back the update of {} for {}: retry back-off",
+                            addr,
+                            fmt_dur(wait)
+                        );
+                        return Some(wait);
+                    }
+                }
             }
         }
+        if let Some(wait) = self.budget.check(now) {
+            warn!(
+                "Rate budget: holding back the update of {} for {} \
+                 (at most {} updates/hour, at least {} apart, per family)",
+                addr,
+                fmt_dur(wait),
+                conf.ddns_max_updates_per_hour,
+                fmt_dur(conf.ddns_min_interval)
+            );
+            return Some(wait);
+        }
 
+        if !changed {
+            info!("Periodic resync of {}", addr);
+        }
+        self.budget.record(now);
+        self.last_attempt = Some(now);
         let outcome = send_ddns_update(client, addr.into(), conf).await;
+        // The request itself took time; do not credit it to the back-off.
+        let now = SystemTime::now();
+
         if outcome.is_success() {
             self.confirmed = Some(addr);
+            self.confirmed_at = Some(now);
             self.rejected = None;
             self.clear_retry();
-        } else if let DdnsOutcome::Permanent(_) = outcome {
+            return self.resync(now, conf).wake();
+        }
+        if let DdnsOutcome::Permanent(_) = outcome {
             self.rejected = Some(addr);
             self.clear_retry();
-        } else {
-            let delay = self.backoff_s.max(outcome.retry_floor_s()).min(RETRY_MAX_S);
-            self.next_retry = Some(SystemTime::now() + Duration::from_secs(delay));
-            self.backoff_s = (delay * 2).min(RETRY_MAX_S);
-            warn!("Retrying the update of {} in {} s", addr, delay);
+            // The next resync tick gives the operator a periodic retry, which is how
+            // a fixed grant or a created zone eventually gets picked up.
+            return self.resync(now, conf).wake();
         }
+        let delay = self
+            .backoff
+            .max(outcome.retry_floor(conf))
+            .min(conf.ddns_retry_max);
+        self.next_retry = Some(now + delay);
+        self.backoff = (delay * 2).min(conf.ddns_retry_max);
+        warn!("Retrying the update of {} in {}", addr, fmt_dur(delay));
+        Some(delay)
     }
 
     fn clear_retry(&mut self) {
         self.next_retry = None;
-        self.backoff_s = 0;
+        self.backoff = Duration::ZERO;
+    }
+}
+
+/// One address as remembered on disk.
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedAddr<A> {
+    addr: A,
+    /// Unix timestamp of the acknowledgement.
+    updated: u64,
+}
+
+/// What a previous run confirmed. Keyed by endpoint and hostname so that state
+/// written for a different server or name is not believed.
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedState {
+    endpoint: String,
+    hostname: String,
+    #[serde(default)]
+    v4: Option<PersistedAddr<Ipv4Addr>>,
+    #[serde(default)]
+    v6: Option<PersistedAddr<Ipv6Addr>>,
+}
+
+fn unix_ts(t: SystemTime) -> u64 {
+    t.duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// The update endpoint with the credentials stripped: it identifies the server the
+/// state belongs to, and it is written to a file, so it must not carry a password.
+fn state_endpoint(ddns_url: &str) -> String {
+    match reqwest::Url::parse(ddns_url) {
+        Ok(mut url) => {
+            let _ = url.set_username("");
+            let _ = url.set_password(None);
+            url.to_string()
+        }
+        // Unparseable URLs are rejected at startup; be defensive rather than leak one.
+        Err(_) => String::new(),
+    }
+}
+
+/// Remember the confirmed addresses, so that a restart — or a systemd restart loop —
+/// does not spend the server's hourly update budget re-publishing what is already on
+/// record (§10). Written via a temporary file so a crash cannot leave a torn state.
+fn save_state(conf: &Config, state4: &PushState<Ipv4Addr>, state6: &PushState<Ipv6Addr>) {
+    if conf.state_file.is_empty() {
+        return;
+    }
+    let persisted = PersistedState {
+        endpoint: state_endpoint(&conf.ddns_url),
+        hostname: conf.hostname.clone(),
+        v4: state4.confirmed.map(|addr| PersistedAddr {
+            addr,
+            updated: unix_ts(state4.confirmed_at.unwrap_or_else(SystemTime::now)),
+        }),
+        v6: state6.confirmed.map(|addr| PersistedAddr {
+            addr,
+            updated: unix_ts(state6.confirmed_at.unwrap_or_else(SystemTime::now)),
+        }),
+    };
+    let json = match serde_json::to_vec_pretty(&persisted) {
+        Ok(j) => j,
+        Err(e) => {
+            warn!("Failed to serialize the state: {}", e);
+            return;
+        }
+    };
+    let path = std::path::Path::new(&conf.state_file);
+    if let Some(dir) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            warn!("Failed to create the state directory {:?}: {}", dir, e);
+            return;
+        }
+    }
+    let tmp = path.with_extension("tmp");
+    if let Err(e) = std::fs::write(&tmp, &json) {
+        warn!("Failed to write the state file {:?}: {}", tmp, e);
+        return;
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        warn!("Failed to replace the state file {:?}: {}", path, e);
+        return;
+    }
+    debug!("Saved state to {:?}", path);
+}
+
+fn load_state(conf: &Config, state4: &mut PushState<Ipv4Addr>, state6: &mut PushState<Ipv6Addr>) {
+    if conf.state_file.is_empty() {
+        return;
+    }
+    let raw = match std::fs::read_to_string(&conf.state_file) {
+        Ok(r) => r,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            debug!("No state file at {} yet", conf.state_file);
+            return;
+        }
+        Err(e) => {
+            warn!("Failed to read the state file {}: {}", conf.state_file, e);
+            return;
+        }
+    };
+    let persisted: PersistedState = match serde_json::from_str(&raw) {
+        Ok(p) => p,
+        Err(e) => {
+            warn!(
+                "Ignoring an unreadable state file {}: {}",
+                conf.state_file, e
+            );
+            return;
+        }
+    };
+    if persisted.hostname != conf.hostname || persisted.endpoint != state_endpoint(&conf.ddns_url) {
+        info!(
+            "Ignoring the state file: it was written for {} at {}",
+            persisted.hostname, persisted.endpoint
+        );
+        return;
+    }
+    if let Some(p) = persisted.v4 {
+        state4.adopt(
+            p.addr,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(p.updated),
+            conf,
+        );
+    }
+    if let Some(p) = persisted.v6 {
+        state6.adopt(
+            p.addr,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(p.updated),
+            conf,
+        );
+    }
+}
+
+/// Sleep until `deadline`, or forever when there is nothing scheduled.
+async fn sleep_until_opt(deadline: Option<SystemTime>) {
+    match deadline {
+        Some(t) => {
+            let d = t
+                .duration_since(SystemTime::now())
+                .unwrap_or(Duration::ZERO);
+            tokio::time::sleep(d).await
+        }
+        None => std::future::pending().await,
     }
 }
 
 async fn update_worker(mut rx: Receiver<HashMap<IfaceIpAddr, IfaceIpAddrData>>, conf: Config) {
-    let client = build_http_client();
-    let mut iteration_start = SystemTime::now();
-    let mut current_iface_addrs_map = None;
-    let mut state4: PushState<Ipv4Addr> = PushState::default();
-    let mut state6: PushState<Ipv6Addr> = PushState::default();
-    let (mut pending_best4, mut pending_best6) = (None, None);
-    let mut new_iface_addrs_map = None;
-    let mut main_loop_next_timeout = MIN_UPDATE_INTERVAL_S + 1;
+    let client = build_http_client(&conf);
+    let mut state4: PushState<Ipv4Addr> = PushState::new(&conf);
+    let mut state6: PushState<Ipv6Addr> = PushState::new(&conf);
+    load_state(&conf, &mut state4, &mut state6);
+    let mut saved = (state4.confirmed, state6.confirmed);
+
+    let mut current_addrs: Option<HashMap<IfaceIpAddr, IfaceIpAddrData>> = None;
+    let (mut desired4, mut desired6): (Option<Ipv4Addr>, Option<Ipv6Addr>) = (None, None);
+    // Debounce window: set when the best address changes, cleared when it expires.
+    let mut settle: Option<SystemTime> = None;
+    // Next time a family wants attention (retry, rate budget, resync).
+    let mut wake_at: Option<SystemTime> = None;
 
     loop {
-        match timeout(Duration::from_secs(main_loop_next_timeout), rx.recv()).await {
-            Ok(Some(iface_addrs_map)) => {
-                new_iface_addrs_map = Some(iface_addrs_map);
-                let elapsed = iteration_start
-                    .elapsed()
-                    .unwrap_or(Duration::ZERO)
-                    .as_secs();
-                if elapsed < MIN_UPDATE_INTERVAL_S {
-                    main_loop_next_timeout = MIN_UPDATE_INTERVAL_S - elapsed + 1;
-                    debug!(
-                        "dampening changes, elapsed: {}, next loop timeout: {}",
-                        elapsed, main_loop_next_timeout
-                    );
+        // While the settle window is open we wait for it and nothing else: a due
+        // retry is at most `ddns_settle_delay` late, and we would rather send once
+        // with the final address than twice around a change.
+        let deadline = match settle {
+            Some(_) => settle,
+            None => wake_at,
+        };
+        tokio::select! {
+            msg = rx.recv() => {
+                let Some(addrs) = msg else {
+                    info!("Channel closed, stopping update worker!");
+                    break;
+                };
+                if current_addrs.as_ref() == Some(&addrs) {
+                    debug!("Address state unchanged -> nothing to do");
                     continue;
                 }
+                info!("Detected address state change");
+                apply_hooks(&addrs, &conf).await;
+                let (best6, best4) = select_best(&addrs, &conf);
+                current_addrs = Some(addrs);
+                if (best4, best6) != (desired4, desired6) {
+                    info!("Best addresses to publish: v4={:?} v6={:?}", best4, best6);
+                    (desired4, desired6) = (best4, best6);
+                    // Arm the debounce window once and do not slide it: a flapping
+                    // address would otherwise postpone the update indefinitely.
+                    if settle.is_none() {
+                        settle = Some(SystemTime::now() + conf.ddns_settle_delay);
+                    }
+                }
+                continue;
             }
-            Ok(None) => {
-                info!("Channel closed, stopping update worker!");
-                break;
-            }
-            Err(_) => {
-                // timeout, continue with existing state
-            }
+            _ = sleep_until_opt(deadline) => {}
         }
 
-        if new_iface_addrs_map != current_iface_addrs_map {
-            info!("Detected state change -> Running update");
-
-            if let Some(new_iface_addrs_map_data) = new_iface_addrs_map.as_ref() {
-                apply_hooks(new_iface_addrs_map_data, &conf).await;
-                (pending_best6, pending_best4) = select_best(new_iface_addrs_map_data, &conf);
-            }
-            current_iface_addrs_map = new_iface_addrs_map.clone();
-        } else if !state6.is_current(pending_best6) || !state4.is_current(pending_best4) {
-            debug!("Pending DDNS updates -> re-evaluating (subject to the retry policy)");
+        settle = None;
+        let wake6 = state6.sync(desired6, false, &client, &conf).await;
+        let wake4 = state4.sync(desired4, false, &client, &conf).await;
+        let next = [wake4, wake6].into_iter().flatten().min();
+        wake_at = next.map(|d| SystemTime::now() + d);
+        match next {
+            Some(d) => debug!("Next scheduled attempt in {}", fmt_dur(d)),
+            None => debug!("Nothing scheduled; waiting for an address change"),
         }
 
-        state6.sync(pending_best6, &client, &conf).await;
-        state4.sync(pending_best4, &client, &conf).await;
-
-        iteration_start = SystemTime::now();
-        main_loop_next_timeout = MIN_UPDATE_INTERVAL_S + 1;
+        if (state4.confirmed, state6.confirmed) != saved {
+            saved = (state4.confirmed, state6.confirmed);
+            save_state(&conf, &state4, &state6);
+        }
     }
 }
 
@@ -940,20 +1343,24 @@ async fn oneshot(conf: &Config) -> bool {
 
     apply_hooks(&iface_addrs_map, &conf).await;
 
-    let client = build_http_client();
-    let (new_best6, new_best4) = select_best(&iface_addrs_map, conf);
-    let mut ok = true;
-    if let Some(new_best6_data) = new_best6 {
-        ok &= send_ddns_update(&client, IpAddr::V6(new_best6_data), conf)
-            .await
-            .is_success();
-    }
-    if let Some(new_best4_data) = new_best4 {
-        ok &= send_ddns_update(&client, IpAddr::V4(new_best4_data), conf)
-            .await
-            .is_success();
-    }
-    ok
+    let client = build_http_client(conf);
+    let (best6, best4) = select_best(&iface_addrs_map, conf);
+
+    // Go through the same state as the daemon: a `--oneshot` run on a timer (a cron
+    // job, a NetworkManager dispatcher script) would otherwise re-publish an
+    // unchanged address on every tick and eat the server's hourly budget. The state
+    // is ignored once it is older than `ddns_resync_period`, so a periodic run still
+    // refreshes the record twice a day.
+    let mut state4: PushState<Ipv4Addr> = PushState::new(conf);
+    let mut state6: PushState<Ipv6Addr> = PushState::new(conf);
+    load_state(conf, &mut state4, &mut state6);
+    state6.sync(best6, false, &client, conf).await;
+    state4.sync(best4, false, &client, conf).await;
+    save_state(conf, &state4, &state6);
+
+    // The server holds what we wanted it to hold — whether we pushed it just now or
+    // a previous run did.
+    state4.confirmed == best4 && state6.confirmed == best6
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
@@ -970,6 +1377,58 @@ fn default_report_ipv6_ula() -> bool {
     false
 }
 
+/// Debounce window: how long to wait for the address set to stop changing before
+/// publishing. Long enough to collapse a link bounce into one update.
+fn default_settle_delay() -> Duration {
+    Duration::from_secs(5)
+}
+
+/// Hard minimum between two updates of the same family. The server allows 60 per
+/// hour and family (DYNDNS2.md §10), i.e. one per minute sustained.
+fn default_min_interval() -> Duration {
+    Duration::from_secs(60)
+}
+
+/// Sliding-window cap per family, deliberately at half the server's 60/hour so we
+/// hit our own governor first and never learn about the limit from an `abuse`.
+fn default_max_updates_per_hour() -> u32 {
+    30
+}
+
+fn default_retry_min() -> Duration {
+    Duration::from_secs(60)
+}
+
+fn default_retry_max() -> Duration {
+    Duration::from_secs(3600)
+}
+
+/// Back-off floor after `abuse`/429. The server's counter is a one-hour window, so
+/// a minute-scale retry would only refresh it.
+fn default_retry_ratelimit_min() -> Duration {
+    Duration::from_secs(900)
+}
+
+/// Unconditional re-publish interval. Cheap insurance against a record that was
+/// changed or lost server-side: 2 requests per family per day.
+fn default_resync_period() -> Duration {
+    Duration::from_secs(43200)
+}
+
+/// Periodic full address re-dump from the kernel. Off by default — netlink
+/// notifications are reliable; this exists for the paranoid.
+fn default_kernel_poll_period() -> Duration {
+    Duration::ZERO
+}
+
+fn default_http_timeout() -> Duration {
+    Duration::from_secs(30)
+}
+
+fn default_state_file() -> String {
+    "/var/lib/teleddns/state.json".to_string()
+}
+
 #[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
 struct Config {
     debug: Option<bool>,
@@ -983,6 +1442,97 @@ struct Config {
     report_ipv6_ula: bool,
     interfaces: Vec<String>,
     hooks: Option<Vec<Hook>>,
+
+    // Timing. Durations are written as human-readable strings ("5s", "15min",
+    // "12h"), matching teleddns-server's convention.
+    #[serde(default = "default_settle_delay", with = "humantime_serde")]
+    ddns_settle_delay: Duration,
+    #[serde(default = "default_min_interval", with = "humantime_serde")]
+    ddns_min_interval: Duration,
+    #[serde(default = "default_max_updates_per_hour")]
+    ddns_max_updates_per_hour: u32,
+    #[serde(default = "default_retry_min", with = "humantime_serde")]
+    ddns_retry_min: Duration,
+    #[serde(default = "default_retry_max", with = "humantime_serde")]
+    ddns_retry_max: Duration,
+    #[serde(default = "default_retry_ratelimit_min", with = "humantime_serde")]
+    ddns_retry_ratelimit_min: Duration,
+    #[serde(default = "default_resync_period", with = "humantime_serde")]
+    ddns_resync_period: Duration,
+    #[serde(default = "default_kernel_poll_period", with = "humantime_serde")]
+    ddns_kernel_poll_period: Duration,
+    #[serde(default = "default_http_timeout", with = "humantime_serde")]
+    http_timeout: Duration,
+
+    /// Where the last confirmed addresses are remembered across restarts. Set to
+    /// an empty string to disable persistence.
+    #[serde(default = "default_state_file")]
+    state_file: String,
+}
+
+/// Startup sanity checks. Everything that would otherwise only show up as a server
+/// error, a stuck timer or a division by zero at the first update.
+fn validate_config(conf: &Config) -> Result<(), String> {
+    validate_hostname(&conf.hostname)
+        .map_err(|e| format!("hostname {:?}: {}", conf.hostname, e))?;
+    // Not echoing the URL back: it may carry the password, and this message goes to
+    // the log.
+    let url = reqwest::Url::parse(&conf.ddns_url).map_err(|e| format!("ddns_url: {e}"))?;
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return Err(format!(
+            "ddns_url must be http or https, not {:?}",
+            url.scheme()
+        ));
+    }
+    if conf.ddns_max_updates_per_hour == 0 {
+        return Err("ddns_max_updates_per_hour must be at least 1".to_string());
+    }
+    if conf.ddns_retry_min > conf.ddns_retry_max {
+        return Err(format!(
+            "ddns_retry_min ({}) must not exceed ddns_retry_max ({})",
+            fmt_dur(conf.ddns_retry_min),
+            fmt_dur(conf.ddns_retry_max)
+        ));
+    }
+    if conf.http_timeout.is_zero() {
+        return Err("http_timeout must not be zero".to_string());
+    }
+    // The server allows 60 updates per hour and family and answers `abuse` past that
+    // (DYNDNS2.md §10). A budget above that guarantees we find out the hard way.
+    if conf.ddns_max_updates_per_hour > SERVER_UPDATES_PER_HOUR {
+        warn!(
+            "ddns_max_updates_per_hour is {}, above the {} per hour and family that \
+             teleddns-server permits — expect `abuse` responses",
+            conf.ddns_max_updates_per_hour, SERVER_UPDATES_PER_HOUR
+        );
+    }
+    if conf.ddns_min_interval < Duration::from_secs(60) {
+        warn!(
+            "ddns_min_interval is {}, below the one update per minute and family that \
+             teleddns-server sustains — expect `abuse` responses",
+            fmt_dur(conf.ddns_min_interval)
+        );
+    }
+    if !conf.ddns_resync_period.is_zero() && conf.ddns_resync_period < Duration::from_secs(3600) {
+        warn!(
+            "ddns_resync_period is {}; a short resync period spends the update budget \
+             for nothing — 12h is plenty",
+            fmt_dur(conf.ddns_resync_period)
+        );
+    }
+    Ok(())
+}
+
+/// Wait for whichever termination signal arrives first; returns its name.
+async fn wait_for_termination() -> Result<&'static str, std::io::Error> {
+    let mut sighup = signal(SignalKind::hangup())?;
+    let mut sigterm = signal(SignalKind::terminate())?;
+    let mut sigint = signal(SignalKind::interrupt())?;
+    Ok(tokio::select! {
+        _ = sighup.recv() => "SIGHUP",
+        _ = sigterm.recv() => "SIGTERM",
+        _ = sigint.recv() => "SIGINT",
+    })
 }
 
 #[derive(Parser, Debug)]
@@ -1028,18 +1578,15 @@ async fn main() {
     info!("Read config file {} finished", &args.config);
     info!("Set log level {:?}", loglevel);
 
-    if let Err(e) = validate_hostname(&conf.hostname) {
-        error!(
-            "Invalid hostname {:?} in the configuration: {}",
-            conf.hostname, e
-        );
+    if let Err(e) = validate_config(&conf) {
+        error!("Invalid configuration: {}", e);
         std::process::exit(1);
     }
 
     if args.oneshot {
         info!("Running in oneshot mode...");
         if !oneshot(&conf).await {
-            error!("Oneshot DDNS update failed");
+            error!("Oneshot DDNS update did not complete — see the log above");
             std::process::exit(1);
         }
     } else {
@@ -1049,12 +1596,16 @@ async fn main() {
         jset.spawn(update_worker(rx, conf.clone()));
         jset.spawn(netlink_events_receiver(tx, conf.clone()));
 
-        info!("Listener started, waiting for HUP");
-        signal(SignalKind::hangup())
-            .expect("Failed to bind to HUP signal.")
-            .recv()
-            .await;
-        info!("Terminating on HUP.");
+        // systemd sends SIGTERM on `systemctl stop`, a terminal SIGINT on Ctrl-C;
+        // handling only SIGHUP turned both into a hard kill.
+        info!("Listener started, waiting for a termination signal");
+        match wait_for_termination().await {
+            Ok(sig) => info!("Terminating on {}.", sig),
+            Err(e) => {
+                error!("Failed to install the signal handlers: {}", e);
+                std::process::exit(1);
+            }
+        }
         jset.shutdown().await;
 
         let mut output = Vec::new();
@@ -1141,10 +1692,12 @@ mod tests {
     #[test]
     fn classify_rate_limit_is_retryable_but_slow() {
         // `abuse` is a rate limit (429), not a permanent error: retry, later (§12.3).
+        let conf = test_config();
         let outcome = classify_ddns_response(StatusCode::TOO_MANY_REQUESTS, "abuse");
         assert!(matches!(outcome, DdnsOutcome::RateLimited(_)));
         assert!(!outcome.is_success());
-        assert_eq!(outcome.retry_floor_s(), RETRY_RATELIMIT_MIN_S);
+        assert_eq!(outcome.retry_floor(&conf), conf.ddns_retry_ratelimit_min);
+        assert!(outcome.retry_floor(&conf) > conf.ddns_retry_min);
         // Same via the status fallback, for a server with an empty body.
         assert!(matches!(
             classify_ddns_response(StatusCode::TOO_MANY_REQUESTS, ""),
@@ -1233,23 +1786,12 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn permanent_failure_is_not_retried_and_success_is_adopted() {
-        // No network here: drive the state machine directly.
-        let mut st: PushState<Ipv4Addr> = PushState::default();
-        let addr: Ipv4Addr = "192.0.2.1".parse().unwrap();
-
-        st.confirmed = Some(addr);
-        assert!(st.is_current(Some(addr)), "an acked address is not re-sent");
-
-        // A permanently rejected address stays blocked until the desired value changes.
-        st.confirmed = None;
-        st.rejected = Some(addr);
-        assert!(!st.is_current(Some(addr)));
-        let conf = Config {
+    /// A config whose `ddns_url` refuses the connection instantly (nothing listens on
+    /// port 1), so the tests exercise the failure paths without a server and without
+    /// waiting for a timeout.
+    fn test_config() -> Config {
+        Config {
             debug: None,
-            // An unroutable URL: if the guard failed we would attempt a request and
-            // the test would take the HTTP timeout instead of returning at once.
             ddns_url: "http://127.0.0.1:1/nic/update".to_string(),
             hostname: "host.example.com".to_string(),
             enable_ipv6: true,
@@ -1258,17 +1800,330 @@ mod tests {
             report_ipv6_ula: false,
             interfaces: vec!["*".to_string()],
             hooks: None,
-        };
-        st.sync(Some(addr), &build_http_client(), &conf).await;
-        assert_eq!(st.confirmed, None, "no push happened, nothing to confirm");
+            ddns_settle_delay: default_settle_delay(),
+            ddns_min_interval: default_min_interval(),
+            ddns_max_updates_per_hour: default_max_updates_per_hour(),
+            ddns_retry_min: default_retry_min(),
+            ddns_retry_max: default_retry_max(),
+            ddns_retry_ratelimit_min: default_retry_ratelimit_min(),
+            ddns_resync_period: default_resync_period(),
+            ddns_kernel_poll_period: default_kernel_poll_period(),
+            http_timeout: default_http_timeout(),
+            // No persistence unless a test asks for it.
+            state_file: String::new(),
+        }
+    }
+
+    fn secs(s: u64) -> Duration {
+        Duration::from_secs(s)
+    }
+
+    /// An arbitrary fixed point in time; the budget only ever looks at differences.
+    fn t0() -> SystemTime {
+        SystemTime::UNIX_EPOCH + secs(1_000_000_000)
+    }
+
+    #[test]
+    fn rate_budget_enforces_the_minimum_interval() {
+        let mut conf = test_config();
+        conf.ddns_min_interval = secs(60);
+        let mut budget = RateBudget::new(&conf);
+
         assert_eq!(
-            st.backoff_s, 0,
-            "a blocked address does not schedule a retry"
+            budget.check(t0()),
+            None,
+            "the first update goes out at once"
+        );
+        budget.record(t0());
+        assert_eq!(budget.check(t0() + secs(30)), Some(secs(30)));
+        assert_eq!(budget.check(t0() + secs(59)), Some(secs(1)));
+        assert_eq!(budget.check(t0() + secs(60)), None);
+    }
+
+    #[test]
+    fn rate_budget_enforces_the_hourly_cap() {
+        let mut conf = test_config();
+        conf.ddns_min_interval = Duration::ZERO;
+        conf.ddns_max_updates_per_hour = 3;
+        let mut budget = RateBudget::new(&conf);
+
+        for i in 0..3 {
+            let now = t0() + secs(i * 600);
+            assert_eq!(budget.check(now), None);
+            budget.record(now);
+        }
+        // The window is full: wait for the oldest send to age out of the hour.
+        assert_eq!(budget.check(t0() + secs(1800)), Some(secs(1800)));
+        assert_eq!(budget.check(t0() + secs(3600)), None);
+    }
+
+    #[test]
+    fn rate_budget_caps_a_flapping_address() {
+        // The scenario the governor exists for: an address that changes every second
+        // for two hours (a rotating privacy address, a bouncing link).
+        let conf = test_config();
+        let mut budget = RateBudget::new(&conf);
+        let mut sent: Vec<u64> = Vec::new();
+        for s in 0..7200 {
+            let now = t0() + secs(s);
+            if budget.check(now).is_none() {
+                budget.record(now);
+                sent.push(s);
+            }
+        }
+
+        assert!(!sent.is_empty(), "the governor must not block everything");
+        // Never two updates closer than the minimum interval...
+        for pair in sent.windows(2) {
+            assert!(
+                pair[1] - pair[0] >= conf.ddns_min_interval.as_secs(),
+                "updates at {} and {} are too close",
+                pair[0],
+                pair[1]
+            );
+        }
+        // ...and never more than the cap within any one-hour window, which is what
+        // keeps us clear of the server's 60/hour (DYNDNS2.md §10).
+        let cap = conf.ddns_max_updates_per_hour as usize;
+        assert!(cap < SERVER_UPDATES_PER_HOUR as usize);
+        for (i, start) in sent.iter().enumerate() {
+            let in_window = sent[i..].iter().take_while(|s| **s - start < 3600).count();
+            assert!(
+                in_window <= cap,
+                "{} updates within the hour starting at {}",
+                in_window,
+                start
+            );
+        }
+    }
+
+    #[test]
+    fn resync_is_due_only_after_the_period() {
+        let mut conf = test_config();
+        conf.ddns_resync_period = secs(3600);
+        let mut st: PushState<Ipv4Addr> = PushState::new(&conf);
+
+        // Nothing sent yet — the first update is always due.
+        assert_eq!(st.resync(t0(), &conf), Resync::Due);
+        st.last_attempt = Some(t0());
+        assert_eq!(
+            st.resync(t0() + secs(600), &conf),
+            Resync::After(secs(3000))
+        );
+        assert_eq!(st.resync(t0() + secs(3600), &conf), Resync::Due);
+        // A clock that moved backwards (no RTC, pre-NTP boot) counts as due rather
+        // than stalling the resync until the clock catches up.
+        assert_eq!(st.resync(t0() - secs(10), &conf), Resync::Due);
+
+        conf.ddns_resync_period = Duration::ZERO;
+        assert_eq!(st.resync(t0(), &conf), Resync::Disabled);
+        assert_eq!(st.resync(t0(), &conf).wake(), None);
+    }
+
+    #[tokio::test]
+    async fn transient_failures_back_off_exponentially() {
+        let mut conf = test_config();
+        // Not what this test is about; the budget has its own tests.
+        conf.ddns_min_interval = Duration::ZERO;
+        conf.ddns_retry_min = secs(60);
+        conf.ddns_retry_max = secs(240);
+        let client = build_http_client(&conf);
+        let mut st: PushState<Ipv4Addr> = PushState::new(&conf);
+        let addr: Ipv4Addr = "192.0.2.1".parse().unwrap();
+
+        // Connection refused is a transient failure: retry, doubling up to the ceiling.
+        let mut delays = Vec::new();
+        for _ in 0..4 {
+            delays.push(st.sync(Some(addr), false, &client, &conf).await);
+            // Pretend the back-off elapsed, so the next call attempts a push.
+            st.next_retry = None;
+        }
+        assert_eq!(
+            delays,
+            vec![
+                Some(secs(60)),
+                Some(secs(120)),
+                Some(secs(240)),
+                Some(secs(240))
+            ]
+        );
+        assert_eq!(st.confirmed, None, "a failed push confirms nothing");
+
+        // The back-off holds a retry back until it elapses, and reports the remainder.
+        st.next_retry = Some(SystemTime::now() + secs(120));
+        let wait = st.sync(Some(addr), false, &client, &conf).await.unwrap();
+        assert!(wait <= secs(120) && wait > secs(110), "wait was {wait:?}");
+        // A forced push (control socket, §8) ignores the back-off.
+        st.sync(Some(addr), true, &client, &conf).await;
+        assert!(st.last_attempt.is_some());
+    }
+
+    #[tokio::test]
+    async fn permanent_failure_is_not_retried_until_the_resync() {
+        let mut conf = test_config();
+        conf.ddns_resync_period = secs(3600);
+        let client = build_http_client(&conf);
+        let mut st: PushState<Ipv4Addr> = PushState::new(&conf);
+        let addr: Ipv4Addr = "192.0.2.1".parse().unwrap();
+
+        // Simulate a `badauth`/`!yours` answer for this address.
+        st.rejected = Some(addr);
+        st.last_attempt = Some(SystemTime::now());
+        let wake = st.sync(Some(addr), false, &client, &conf).await;
+        assert_eq!(st.confirmed, None, "no push happened, nothing to confirm");
+        assert_eq!(st.backoff, Duration::ZERO, "no retry was scheduled");
+        assert!(
+            wake.is_some_and(|d| d > secs(3500)),
+            "the next attempt is the resync tick, not a retry: {wake:?}"
         );
 
-        // Losing the address just clears the state — DDNS never deletes a record.
+        // A different address is not covered by the rejection and is attempted.
+        let other: Ipv4Addr = "192.0.2.2".parse().unwrap();
+        st.sync(Some(other), false, &client, &conf).await;
+        assert!(st.backoff > Duration::ZERO, "the new address was attempted");
+    }
+
+    #[tokio::test]
+    async fn an_acked_address_is_not_resent() {
+        let conf = test_config();
+        let client = build_http_client(&conf);
+        let mut st: PushState<Ipv4Addr> = PushState::new(&conf);
+        let addr: Ipv4Addr = "192.0.2.1".parse().unwrap();
+
         st.confirmed = Some(addr);
-        st.sync(None, &build_http_client(), &conf).await;
+        st.confirmed_at = Some(SystemTime::now());
+        st.last_attempt = Some(SystemTime::now());
+        let wake = st.sync(Some(addr), false, &client, &conf).await;
+        assert_eq!(st.backoff, Duration::ZERO, "nothing was sent");
+        assert!(
+            wake.is_some_and(|d| d > conf.ddns_resync_period - secs(60)),
+            "the only thing left to do is the resync: {wake:?}"
+        );
+
+        // Losing the address just clears our state — DDNS never deletes a record (§6).
+        assert_eq!(st.sync(None, false, &client, &conf).await, None);
         assert_eq!(st.confirmed, None);
+    }
+
+    #[test]
+    fn state_is_kept_across_restarts() {
+        let mut conf = test_config();
+        let path = std::env::temp_dir().join(format!("teleddns-state-{}.json", std::process::id()));
+        conf.state_file = path.to_string_lossy().to_string();
+        conf.ddns_url = "https://user:secret@ddns.example.com/nic/update".to_string();
+        let addr4: Ipv4Addr = "192.0.2.1".parse().unwrap();
+
+        let mut s4: PushState<Ipv4Addr> = PushState::new(&conf);
+        let s6: PushState<Ipv6Addr> = PushState::new(&conf);
+        s4.confirmed = Some(addr4);
+        s4.confirmed_at = Some(SystemTime::now());
+        save_state(&conf, &s4, &s6);
+
+        let raw = std::fs::read_to_string(&path).expect("state file");
+        assert!(
+            !raw.contains("secret"),
+            "the state file must not carry credentials: {raw}"
+        );
+
+        // A fresh process adopts it and therefore does not re-publish anything.
+        let (mut l4, mut l6): (PushState<Ipv4Addr>, PushState<Ipv6Addr>) =
+            (PushState::new(&conf), PushState::new(&conf));
+        load_state(&conf, &mut l4, &mut l6);
+        assert_eq!(l4.confirmed, Some(addr4));
+        assert_eq!(l6.confirmed, None);
+
+        // State written for another name or another server is not believed.
+        let mut other = conf.clone();
+        other.hostname = "other.example.com".to_string();
+        let (mut o4, mut o6): (PushState<Ipv4Addr>, PushState<Ipv6Addr>) =
+            (PushState::new(&other), PushState::new(&other));
+        load_state(&other, &mut o4, &mut o6);
+        assert_eq!(o4.confirmed, None);
+
+        // Stale state must not suppress an update forever.
+        s4.confirmed_at = Some(SystemTime::now() - conf.ddns_resync_period - secs(60));
+        save_state(&conf, &s4, &s6);
+        let (mut st4, mut st6): (PushState<Ipv4Addr>, PushState<Ipv6Addr>) =
+            (PushState::new(&conf), PushState::new(&conf));
+        load_state(&conf, &mut st4, &mut st6);
+        assert_eq!(st4.confirmed, None);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn timing_config_parses_human_durations() {
+        let conf: Config = serde_yaml::from_str(
+            r#"
+ddns_url: "https://ddns.example.com/nic/update"
+hostname: "host.example.com"
+enable_ipv6: true
+enable_ipv4: true
+interfaces: ["*"]
+ddns_settle_delay: "10s"
+ddns_min_interval: "2min"
+ddns_resync_period: "6h"
+"#,
+        )
+        .expect("config");
+        assert_eq!(conf.ddns_settle_delay, secs(10));
+        assert_eq!(conf.ddns_min_interval, secs(120));
+        assert_eq!(conf.ddns_resync_period, secs(6 * 3600));
+        // Unset keys keep their defaults.
+        assert_eq!(conf.ddns_retry_max, default_retry_max());
+        assert_eq!(conf.state_file, default_state_file());
+        assert!(validate_config(&conf).is_ok());
+    }
+
+    #[test]
+    fn a_config_without_any_timing_keys_still_loads() {
+        // Every 0.3.x config must keep working: the timing keys are all optional.
+        let conf: Config = serde_yaml::from_str(
+            r#"
+ddns_url: "https://user:pass@ddns.example.com/nic/update"
+hostname: "host.example.com"
+enable_ipv6: true
+enable_ipv4: false
+interfaces: ["*", "-wg0"]
+hooks:
+  - shell: "true"
+"#,
+        )
+        .expect("legacy config");
+        assert_eq!(conf.ddns_settle_delay, default_settle_delay());
+        assert_eq!(conf.ddns_min_interval, default_min_interval());
+        assert_eq!(conf.http_timeout, default_http_timeout());
+        assert!(validate_config(&conf).is_ok());
+    }
+
+    #[test]
+    fn config_validation_rejects_unusable_timing() {
+        let mut conf = test_config();
+        conf.ddns_max_updates_per_hour = 0;
+        assert!(validate_config(&conf).is_err());
+
+        let mut conf = test_config();
+        conf.ddns_retry_min = secs(600);
+        conf.ddns_retry_max = secs(60);
+        assert!(validate_config(&conf).is_err());
+
+        let mut conf = test_config();
+        conf.http_timeout = Duration::ZERO;
+        assert!(validate_config(&conf).is_err());
+
+        let mut conf = test_config();
+        conf.ddns_url = "ftp://ddns.example.com/update".to_string();
+        assert!(validate_config(&conf).is_err());
+
+        let mut conf = test_config();
+        conf.ddns_url = "not a url".to_string();
+        assert!(validate_config(&conf).is_err());
+
+        // Above the server's limit is a warning, not an error: another server may
+        // allow more.
+        let mut conf = test_config();
+        conf.ddns_max_updates_per_hour = 600;
+        conf.ddns_min_interval = secs(1);
+        assert!(validate_config(&conf).is_ok());
     }
 }

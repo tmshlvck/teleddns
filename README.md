@@ -106,12 +106,56 @@ teleddns -o
 
 The exected output should look like this:
 ```
-[2025-02-02T23:16:05Z INFO  teleddns] Read config file /etc/teleddns/teleddns.yaml finished
-[2025-02-02T23:16:05Z INFO  teleddns] Set log level Info
-[2025-02-02T23:16:05Z INFO  teleddns] Main loop now waiting for the oneshot run to finish
-[2025-02-02T23:16:05Z INFO  teleddns] Trigger the first update
-[2025-02-02T23:16:35Z INFO  teleddns] Sending DDNS: 2a02:aa11:380:300:ef1a:78c9:f995:e73d
-[2025-02-02T23:16:36Z INFO  teleddns] DDNS GET to URL https://th:<PASSWORD>@slon.telephant.eu/ddns/update?myip=2a02%3Aaa11%3A380%3A300%3Aef1a%3A78c9%3Af995%3Ae73d&hostname=tapir.d.telephant.eu succeeded with code: 200 OK, text: Ok("{\"detail\":\"DDNS noop AAAA label='tapir' zone.origin='d.telephant.eu.' -> 2a02:aa11:380:300:ef1a:78c9:f995:e73d\"}")
-[2025-02-02T23:16:36Z INFO  teleddns] Sucessfully shutdown
+Read config file /etc/teleddns/teleddns.yaml finished
+Set log level Info
+Running in oneshot mode...
+Sending DDNS: 2a02:aa11:380:300:ef1a:78c9:f995:e73d
+DDNS GET to URL https://th:<PASSWORD>@slon.telephant.eu/ddns/update?myipv6=2a02%3Aaa11%3A380%3A300%3Aef1a%3A78c9%3Af995%3Ae73d&hostname=tapir.d.telephant.eu succeeded: HTTP 200 OK, body: "good 2a02:aa11:380:300:ef1a:78c9:f995:e73d"
+Saved state to "/var/lib/teleddns/state.json"
+Sucessfully shutdown
 ```
+
+A second run right afterwards publishes nothing and says so — the address is already
+on record:
+```
+Adopting 2a02:aa11:380:300:ef1a:78c9:f995:e73d from the state file (confirmed 12s ago)
+```
+
+## Update timing and rate limiting
+
+teleddns-server accepts **60 updates per hour and address family** per record set
+(and 600 per hour and token); past that it answers `abuse` and stops accepting
+updates for a while. A DDNS client is not supposed to send updates on a timer at
+all — only when the address actually changes — so the client is built to stay well
+inside that budget, and every knob below is optional with a default that already
+does.
+
+| key | default | what it does |
+|---|---|---|
+| `ddns_settle_delay` | `5s` | wait for the address set to stop changing before publishing, so a link bounce becomes one update |
+| `ddns_min_interval` | `60s` | hard minimum between two updates of the same family |
+| `ddns_max_updates_per_hour` | `30` | sliding-window cap per family, half of what the server allows |
+| `ddns_retry_min` / `ddns_retry_max` | `60s` / `1h` | exponential back-off after a transient failure |
+| `ddns_retry_ratelimit_min` | `15min` | back-off floor after `abuse`/HTTP 429 — the server counts a one-hour window |
+| `ddns_resync_period` | `12h` | re-publish unconditionally this often (`0s` disables) |
+| `ddns_kernel_poll_period` | `0s` (off) | periodically re-read all addresses from the kernel |
+| `http_timeout` | `30s` | timeout for one DDNS request |
+| `state_file` | `/var/lib/teleddns/state.json` | remembers the acknowledged addresses across restarts (`''` disables) |
+
+Behaviour worth knowing:
+
+- **A permanent failure is not retried.** `badauth`, `!yours`, `nohost`, `notfqdn`
+  and friends mean the request or the configuration is wrong; the client logs an
+  ERROR and waits for the address to change or for the next resync tick instead of
+  hammering the server. See [DYNDNS2.md](DYNDNS2.md) for the full keyword table.
+- **The state file keeps restarts cheap.** Without it, every restart re-publishes
+  the current address; with a crash loop that alone can exhaust the hourly budget.
+  It is ignored once it is older than `ddns_resync_period`, and it is not believed
+  if the hostname or the server in the config changed.
+- **`teleddns -o` uses the same state**, so running it from cron or a
+  NetworkManager dispatcher script does not re-publish an unchanged address on
+  every tick. It exits non-zero when the update did not go through.
+- **If the governor keeps holding updates back** (a WARN in the log), the address is
+  flapping — usually an RFC 4941 temporary/privacy address being picked. Fix the
+  selection, not the limit.
 

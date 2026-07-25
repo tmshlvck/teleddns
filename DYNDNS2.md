@@ -80,8 +80,26 @@ Losing an address is not an update: the DDNS endpoint never deletes a record set
 ## Rate limiting
 
 teleddns-server allows **60 updates/hour per record set** and **600/hour per token**,
-counted per family (§10). The client-side governor that keeps us inside that budget —
-a minimum interval between sent requests, a sliding-window cap, and state persisted
-across restarts — is TODO.md §2; today the worker only enforces a 30 s dampening
-window plus the back-off described above. Until §2 lands, a rapidly flapping address
-can still trip the server's limit.
+counted per family (§10). The client governs itself to stay inside that budget rather
+than discovering it through an `abuse`:
+
+- a debounce window (`ddns_settle_delay`, 5 s) so a link bounce is one update, not
+  three;
+- a hard minimum between two updates of the same family (`ddns_min_interval`, 60 s —
+  the sustainable rate the server's limit implies);
+- a sliding one-hour window capped at `ddns_max_updates_per_hour` (30, half of what
+  the server allows), so our own governor trips first;
+- exponential back-off on failure, with an hour-scale floor after `abuse`;
+- the confirmed addresses persisted to `state_file`, so a restart — or a systemd
+  restart loop — does not re-publish what is already on record;
+- an unconditional `ddns_resync_period` (12 h) re-publish, which is also the only
+  thing that ever retries a permanently rejected name.
+
+The governor delays, it never drops: the pending address is always the latest one, so
+a burst collapses into a single update carrying the final value. When it does hold an
+update back it says so at WARN — that means the address is flapping (typically an RFC
+4941 temporary address being selected), which is worth fixing at the source rather
+than by raising the limit.
+
+The 600/hour per token limit is shared by every host using the same token; one client
+cannot exceed it on its own, but a fleet sharing one key can.

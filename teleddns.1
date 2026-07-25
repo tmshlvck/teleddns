@@ -66,6 +66,44 @@ List of interfaces to monitor. Use '*' for all interfaces.
 .TP
 .B hooks
 Optional list of hooks to execute after address changes.
+.PP
+Update timing (all optional; durations are written as \fI'5s'\fR, \fI'15min'\fR,
+\fI'12h'\fR). The defaults keep the client inside the 60 updates per hour and
+address family that teleddns-server permits:
+.TP
+.B ddns_settle_delay
+Debounce window after an address change before publishing. Default: \fI5s\fR
+.TP
+.B ddns_min_interval
+Hard minimum between two updates of the same family. Default: \fI60s\fR
+.TP
+.B ddns_max_updates_per_hour
+Sliding-window cap per family. Default: \fI30\fR
+.TP
+.B ddns_retry_min\fR, \fBddns_retry_max
+Exponential back-off bounds after a transient failure.
+Defaults: \fI60s\fR, \fI1h\fR
+.TP
+.B ddns_retry_ratelimit_min
+Back-off floor after an \fIabuse\fR (HTTP 429) answer. Default: \fI15min\fR
+.TP
+.B ddns_resync_period
+Re-publish unconditionally this often; \fI0s\fR disables. Default: \fI12h\fR
+.TP
+.B ddns_kernel_poll_period
+Periodically re-read all addresses from the kernel. Default: \fI0s\fR (off)
+.TP
+.B http_timeout
+Timeout for a single DDNS request. Default: \fI30s\fR
+.TP
+.B state_file
+File remembering the addresses the server acknowledged, so a restart does not
+re-publish them. Empty string disables persistence.
+Default: \fI/var/lib/teleddns/state.json\fR
+.SH SIGNALS
+.TP
+.B SIGTERM\fR, \fBSIGINT\fR, \fBSIGHUP
+Shut down gracefully.
 .SH FILES
 .TP
 .I /etc/teleddns/teleddns.yaml
@@ -73,13 +111,17 @@ Main configuration file (created by user)
 .TP
 .I /usr/share/doc/teleddns/teleddns.yaml.sample
 Sample configuration file
+.TP
+.I /var/lib/teleddns/state.json
+Addresses last acknowledged by the server
 .SH EXIT STATUS
 .TP
 .B 0
 Successful operation
 .TP
 .B non-zero
-An error occurred
+An error occurred. In \fB\-\-oneshot\fR mode this also covers a DDNS update
+that did not go through.
 .SH EXAMPLES
 Run a one-shot update:
 .RS
@@ -103,6 +145,9 @@ teleddns -c /path/to/config.yaml
 .RE
 .SH SEE ALSO
 .BR systemctl (1)
+.PP
+\fIDYNDNS2.md\fR in the source distribution documents the protocol the client
+speaks and how it reacts to each server answer.
 .SH BUGS
 Report bugs at: https://github.com/tmshlvck/teleddns/issues
 .SH AUTHOR
