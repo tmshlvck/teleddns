@@ -43,6 +43,15 @@ use tokio::time::{timeout, Duration};
 const MIN_UPDATE_INTERVAL_S: u64 = 30;
 const HTTP_TIMEOUT_S: u64 = 30;
 
+/// First retry delay after a transient DDNS failure; doubles up to `RETRY_MAX_S`.
+/// (TODO.md §2 turns these into config keys.)
+const RETRY_MIN_S: u64 = 60;
+const RETRY_MAX_S: u64 = 3600;
+/// `abuse`/HTTP 429 means a rate limit tripped. teleddns-server counts 60 updates
+/// per hour per record set, so the first retry has to be an hour-scale wait --
+/// a minute-scale retry would just trip the limit again.
+const RETRY_RATELIMIT_MIN_S: u64 = 900;
+
 const RTNLGRP_LINK: u32 = 1;
 const RTNLGRP_IPV4_IFADDR: u32 = 1 << 4;
 const RTNLGRP_IPV6_IFADDR: u32 = 1 << 8;
@@ -188,8 +197,7 @@ fn compute_v4_metric(
         // [IANA TEST-NET-1, IANA documentation, IANA TEST-NET-3]
         // .is_documentation()
         0
-    }
-    else if ipaddr.is_link_local() {
+    } else if ipaddr.is_link_local() {
         0
     } else if ipaddr.is_private() {
         if accept_private {
@@ -556,22 +564,87 @@ fn sanitize_url(url: &reqwest::Url) -> String {
 /// protocol notes and the keyword -> class mapping.
 #[derive(Debug)]
 enum DdnsOutcome {
-    /// Update accepted and applied (`good`).
-    Good,
+    /// Update accepted and applied (`good`), with the addresses the server
+    /// reports as now published for the name (may include the other family).
+    Good(Vec<IpAddr>),
     /// Address already current (`nochg`) — treated as success.
-    NoChg,
+    NoChg(Vec<IpAddr>),
     /// Permanent failure — retrying will not help (`badauth`, `nohost`,
-    /// `!yours`, `notfqdn`, `abuse`, ...). Do not spin on it.
+    /// `!yours`, `notfqdn`, `numhost`, ...). Do not spin on it.
     Permanent(String),
     /// Transient failure — worth retrying (network/transport error, 5xx,
     /// `911`/`dnserr`).
     Transient(String),
+    /// Rate limit tripped (`abuse` / HTTP 429) — retryable, but only after a
+    /// long wait, see `RETRY_RATELIMIT_MIN_S`.
+    RateLimited(String),
 }
 
 impl DdnsOutcome {
     fn is_success(&self) -> bool {
-        matches!(self, DdnsOutcome::Good | DdnsOutcome::NoChg)
+        matches!(self, DdnsOutcome::Good(_) | DdnsOutcome::NoChg(_))
     }
+
+    /// Shortest acceptable delay before this failure may be retried. Permanent
+    /// failures are never retried, so they have no floor.
+    fn retry_floor_s(&self) -> u64 {
+        match self {
+            DdnsOutcome::RateLimited(_) => RETRY_RATELIMIT_MIN_S,
+            _ => RETRY_MIN_S,
+        }
+    }
+}
+
+/// Parse the informational remainder of a `good`/`nochg` line: the addresses now
+/// on record, IPv4 first, comma-separated. Unparseable tokens are skipped — the
+/// field is advisory, a server is free to word it differently.
+fn parse_ddns_addresses(rest: &str) -> Vec<IpAddr> {
+    rest.split([',', ' ', '\t'])
+        .filter_map(|t| t.trim().parse::<IpAddr>().ok())
+        .collect()
+}
+
+/// Validate the configured hostname against the name syntax the server accepts
+/// (DYNDNS2.md §4): dot-separated labels of 1–63 characters from `[A-Za-z0-9-_]`,
+/// optionally a leading `*` wildcard label, a trailing dot tolerated. Anything
+/// else would come back as `notfqdn`, so we catch it at startup instead.
+///
+/// A comma-separated list is rejected on purpose: the server would accept up to 20
+/// names, but this client publishes one name and reads one result line, so a list
+/// is a configuration mistake rather than a supported feature.
+fn validate_hostname(hostname: &str) -> Result<(), String> {
+    if hostname.is_empty() {
+        return Err("hostname is empty".to_string());
+    }
+    if hostname.contains(',') {
+        return Err(
+            "hostname must be a single FQDN; comma-separated lists are not supported".to_string(),
+        );
+    }
+    if hostname.chars().any(char::is_whitespace) {
+        return Err("hostname must not contain whitespace".to_string());
+    }
+    let name = hostname.strip_suffix('.').unwrap_or(hostname);
+    if !name.contains('.') {
+        return Err(format!("{name:?} is not a fully qualified domain name"));
+    }
+    for (i, label) in name.split('.').enumerate() {
+        if label.is_empty() || label.len() > 63 {
+            return Err(format!("label {label:?} must be 1–63 characters long"));
+        }
+        if i == 0 && label == "*" {
+            continue; // a leading wildcard label is allowed
+        }
+        if let Some(c) = label
+            .chars()
+            .find(|c| !c.is_ascii_alphanumeric() && *c != '-' && *c != '_')
+        {
+            return Err(format!(
+                "label {label:?} contains an invalid character {c:?}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Build the shared HTTP client. A stable `User-Agent` is important because some
@@ -585,54 +658,71 @@ fn build_http_client() -> reqwest::Client {
         .expect("Failed to build HTTP client")
 }
 
-/// Classify a dyndns2 response. The body's first whitespace-delimited token is
-/// the dyndns2 keyword; we fall back to the HTTP status only for servers that
-/// return an unrecognized or empty body.
+/// Classify a dyndns2 response (DYNDNS2.md §8, §12.2). The body carries one line
+/// per requested hostname, and a request-level failure is a single line; since we
+/// always send exactly one hostname, our result is the first non-empty line. Its
+/// first whitespace-delimited token is the keyword (matched case-insensitively),
+/// the remainder is informational. The HTTP status is only a fallback, for servers
+/// that answer with an unrecognized or empty body.
 fn classify_ddns_response(status: reqwest::StatusCode, body: &str) -> DdnsOutcome {
-    let keyword = body
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase();
+    let line = body
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    let (keyword, rest) = match line.split_once(char::is_whitespace) {
+        Some((kw, rest)) => (kw.to_ascii_lowercase(), rest),
+        None => (line.to_ascii_lowercase(), ""),
+    };
     match keyword.as_str() {
-        "good" => DdnsOutcome::Good,
-        "nochg" => DdnsOutcome::NoChg,
-        // Permanent dyndns2 failures — retrying will not help.
-        "nohost" | "notfqdn" | "nofqdn" | "!yours" | "badauth" | "badagent"
-        | "!donator" | "abuse" => DdnsOutcome::Permanent(body.trim().to_string()),
+        "good" => DdnsOutcome::Good(parse_ddns_addresses(rest)),
+        "nochg" => DdnsOutcome::NoChg(parse_ddns_addresses(rest)),
+        // Rate limit tripped — retry, but only after a long back-off (§10).
+        "abuse" => DdnsOutcome::RateLimited(line.to_string()),
+        // Permanent dyndns2 failures — retrying will not help. `numhost`,
+        // `badagent` and `notfqdn` mean the request itself is wrong; `ko` is
+        // DuckDNS' generic rejection (sent with HTTP 200).
+        "nohost" | "notfqdn" | "nofqdn" | "numhost" | "!yours" | "badauth" | "badagent"
+        | "!donator" | "!active" | "ko" => DdnsOutcome::Permanent(line.to_string()),
         // Transient dyndns2 failures — worth retrying.
-        "911" | "dnserr" => DdnsOutcome::Transient(body.trim().to_string()),
-        // Unknown/empty body: decide on the HTTP status instead.
+        "911" | "dnserr" => DdnsOutcome::Transient(line.to_string()),
+        // Unknown/empty body: decide on the HTTP status instead. This is also the
+        // path that keeps pre-0.4.0 teleddns-server (JSON body, HTTP 200) working.
         _ => {
             if status.is_success() {
-                DdnsOutcome::Good
-            } else if status.is_server_error()
-                || status == reqwest::StatusCode::TOO_MANY_REQUESTS
-            {
-                DdnsOutcome::Transient(format!("HTTP {} {}", status, body.trim()))
+                DdnsOutcome::Good(Vec::new())
+            } else if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                DdnsOutcome::RateLimited(format!("HTTP {} {}", status, line))
+            } else if status.is_server_error() {
+                DdnsOutcome::Transient(format!("HTTP {} {}", status, line))
             } else {
-                DdnsOutcome::Permanent(format!("HTTP {} {}", status, body.trim()))
+                DdnsOutcome::Permanent(format!("HTTP {} {}", status, line))
             }
         }
     }
 }
 
-async fn send_ddns_update(client: &reqwest::Client, ip: IpAddr, conf: &Config) -> DdnsOutcome {
-    info!("Sending DDNS: {:?}", ip);
-
-    // dyndns2: IPv4 goes in `myip`, IPv6 in `myipv6`.
+/// Build the update URL for one address. dyndns2: IPv4 goes in `myip`, IPv6 in
+/// `myipv6`. Exactly one hostname and exactly one address per request: the server
+/// also accepts comma-separated lists, but one family per request is what gives us
+/// a per-family result (DYNDNS2.md §9) instead of a merged line we cannot attribute.
+fn build_update_url(base: &str, ip: IpAddr, hostname: &str) -> Result<reqwest::Url, String> {
     let (ip_param, ip_value) = match ip {
         IpAddr::V4(ip4) => ("myip", ip4.to_string()),
         IpAddr::V6(ip6) => ("myipv6", ip6.to_string()),
     };
-    let params = [(ip_param, ip_value), ("hostname", conf.hostname.clone())];
-    let url = match reqwest::Url::parse_with_params(&conf.ddns_url, &params) {
+    let params = [(ip_param, ip_value), ("hostname", hostname.to_string())];
+    reqwest::Url::parse_with_params(base, &params)
+        .map_err(|e| format!("can not parse URL {base} with params {params:?}: {e}"))
+}
+
+async fn send_ddns_update(client: &reqwest::Client, ip: IpAddr, conf: &Config) -> DdnsOutcome {
+    info!("Sending DDNS: {:?}", ip);
+
+    let url = match build_update_url(&conf.ddns_url, ip, &conf.hostname) {
         Ok(u) => u,
         Err(e) => {
-            error!(
-                "Can not parse URL {} with params {:?}: {}",
-                &conf.ddns_url, &params, e
-            );
+            error!("{}", e);
             return DdnsOutcome::Permanent(format!("invalid URL: {e}"));
         }
     };
@@ -644,14 +734,30 @@ async fn send_ddns_update(client: &reqwest::Client, ip: IpAddr, conf: &Config) -
             let body = res.text().await.unwrap_or_default();
             let outcome = classify_ddns_response(status, &body);
             match &outcome {
-                DdnsOutcome::Good | DdnsOutcome::NoChg => info!(
-                    "DDNS GET to URL {} succeeded: HTTP {}, body: {:?}",
-                    sanitized_url,
-                    status,
-                    body.trim()
+                DdnsOutcome::Good(addrs) | DdnsOutcome::NoChg(addrs) => {
+                    info!(
+                        "DDNS GET to URL {} succeeded: HTTP {}, body: {:?}",
+                        sanitized_url,
+                        status,
+                        body.trim()
+                    );
+                    // `good`/`nochg` report what is now on record, so we can check
+                    // that the server really published what we asked for.
+                    if !addrs.is_empty() && !addrs.contains(&ip) {
+                        warn!(
+                            "DDNS server reported success but published {:?} for {}, \
+                             which does not include the address we sent ({})",
+                            addrs, conf.hostname, ip
+                        );
+                    }
+                }
+                DdnsOutcome::Permanent(m) => error!(
+                    "DDNS GET to URL {} permanent failure: HTTP {}, {} \
+                     (not retrying until the address or the configuration changes)",
+                    sanitized_url, status, m
                 ),
-                DdnsOutcome::Permanent(m) => warn!(
-                    "DDNS GET to URL {} permanent failure: HTTP {}, {}",
+                DdnsOutcome::RateLimited(m) => warn!(
+                    "DDNS GET to URL {} rate limited: HTTP {}, {}",
                     sanitized_url, status, m
                 ),
                 DdnsOutcome::Transient(m) => warn!(
@@ -662,9 +768,98 @@ async fn send_ddns_update(client: &reqwest::Client, ip: IpAddr, conf: &Config) -
             outcome
         }
         Err(err) => {
-            warn!("DDNS GET to URL {} failed (transport): {}", sanitized_url, err);
+            warn!(
+                "DDNS GET to URL {} failed (transport): {}",
+                sanitized_url, err
+            );
             DdnsOutcome::Transient(err.to_string())
         }
+    }
+}
+
+/// Per-family push state. Keeps what the server acknowledged and paces retries as
+/// DYNDNS2.md §12.3 requires: `good`/`nochg` are adopted and not re-sent, transient
+/// failures back off exponentially, and a permanent failure is not retried at all
+/// until the desired address (or the configuration) changes.
+#[derive(Debug)]
+struct PushState<A> {
+    /// Last value the server acknowledged.
+    confirmed: Option<A>,
+    /// Value the server rejected permanently — do not send it again.
+    rejected: Option<A>,
+    /// Earliest time a retry may be attempted after a transient failure.
+    next_retry: Option<SystemTime>,
+    /// Current back-off; 0 until the first transient failure.
+    backoff_s: u64,
+}
+
+// Hand-written so that `A` need not implement `Default` (`Ipv4Addr` does not).
+impl<A> Default for PushState<A> {
+    fn default() -> Self {
+        PushState {
+            confirmed: None,
+            rejected: None,
+            next_retry: None,
+            backoff_s: 0,
+        }
+    }
+}
+
+impl<A: Copy + PartialEq + Into<IpAddr> + std::fmt::Display> PushState<A> {
+    /// True when the server state already matches what we want to publish.
+    fn is_current(&self, desired: Option<A>) -> bool {
+        self.confirmed == desired
+    }
+
+    /// Push `desired` if it differs from what the server acknowledged and the
+    /// retry policy allows an attempt right now.
+    async fn sync(&mut self, desired: Option<A>, client: &reqwest::Client, conf: &Config) {
+        let Some(addr) = desired else {
+            // Losing an address is not an update: the DDNS endpoint never deletes
+            // a record set (§6). Just forget what we published.
+            self.confirmed = None;
+            self.clear_retry();
+            return;
+        };
+        if self.confirmed == Some(addr) {
+            return;
+        }
+        if self.rejected == Some(addr) {
+            debug!(
+                "Not re-sending {} — the server rejected it permanently",
+                addr
+            );
+            return;
+        }
+        if let Some(next) = self.next_retry {
+            if SystemTime::now() < next {
+                debug!(
+                    "Holding back the update of {} — retry back-off pending",
+                    addr
+                );
+                return;
+            }
+        }
+
+        let outcome = send_ddns_update(client, addr.into(), conf).await;
+        if outcome.is_success() {
+            self.confirmed = Some(addr);
+            self.rejected = None;
+            self.clear_retry();
+        } else if let DdnsOutcome::Permanent(_) = outcome {
+            self.rejected = Some(addr);
+            self.clear_retry();
+        } else {
+            let delay = self.backoff_s.max(outcome.retry_floor_s()).min(RETRY_MAX_S);
+            self.next_retry = Some(SystemTime::now() + Duration::from_secs(delay));
+            self.backoff_s = (delay * 2).min(RETRY_MAX_S);
+            warn!("Retrying the update of {} in {} s", addr, delay);
+        }
+    }
+
+    fn clear_retry(&mut self) {
+        self.next_retry = None;
+        self.backoff_s = 0;
     }
 }
 
@@ -672,7 +867,8 @@ async fn update_worker(mut rx: Receiver<HashMap<IfaceIpAddr, IfaceIpAddrData>>, 
     let client = build_http_client();
     let mut iteration_start = SystemTime::now();
     let mut current_iface_addrs_map = None;
-    let (mut current_best4, mut current_best6) = (None, None);
+    let mut state4: PushState<Ipv4Addr> = PushState::default();
+    let mut state6: PushState<Ipv6Addr> = PushState::default();
     let (mut pending_best4, mut pending_best6) = (None, None);
     let mut new_iface_addrs_map = None;
     let mut main_loop_next_timeout = MIN_UPDATE_INTERVAL_S + 1;
@@ -711,43 +907,21 @@ async fn update_worker(mut rx: Receiver<HashMap<IfaceIpAddr, IfaceIpAddrData>>, 
                 (pending_best6, pending_best4) = select_best(new_iface_addrs_map_data, &conf);
             }
             current_iface_addrs_map = new_iface_addrs_map.clone();
-        } else {
-            if (pending_best6 != current_best6) || pending_best4 != current_best4 {
-                info!("Detected pending DDNS updates -> Re-try update");
-            }
+        } else if !state6.is_current(pending_best6) || !state4.is_current(pending_best4) {
+            debug!("Pending DDNS updates -> re-evaluating (subject to the retry policy)");
         }
 
-        if pending_best6 != current_best6 {
-            if let Some(new_best6_data) = pending_best6 {
-                if send_ddns_update(&client, IpAddr::V6(new_best6_data), &conf)
-                    .await
-                    .is_success()
-                {
-                    current_best6 = pending_best6;
-                }
-            } else {
-                current_best6 = None;
-            }
-        }
-        if pending_best4 != current_best4 {
-            if let Some(new_best4_data) = pending_best4 {
-                if send_ddns_update(&client, IpAddr::V4(new_best4_data), &conf)
-                    .await
-                    .is_success()
-                {
-                    current_best4 = pending_best4;
-                }
-            } else {
-                current_best4 = None;
-            }
-        }
+        state6.sync(pending_best6, &client, &conf).await;
+        state4.sync(pending_best4, &client, &conf).await;
 
         iteration_start = SystemTime::now();
         main_loop_next_timeout = MIN_UPDATE_INTERVAL_S + 1;
     }
 }
 
-async fn oneshot(conf: &Config) {
+/// One update round for `--oneshot`. Returns false when a DDNS push was attempted
+/// and did not succeed, so the caller can exit non-zero.
+async fn oneshot(conf: &Config) -> bool {
     let (mut conn, handle, _messages) =
         new_connection().expect("Failed to make netlink connection. Check privileges.");
 
@@ -768,12 +942,18 @@ async fn oneshot(conf: &Config) {
 
     let client = build_http_client();
     let (new_best6, new_best4) = select_best(&iface_addrs_map, conf);
+    let mut ok = true;
     if let Some(new_best6_data) = new_best6 {
-        let _ = send_ddns_update(&client, IpAddr::V6(new_best6_data), conf).await;
+        ok &= send_ddns_update(&client, IpAddr::V6(new_best6_data), conf)
+            .await
+            .is_success();
     }
     if let Some(new_best4_data) = new_best4 {
-        let _ = send_ddns_update(&client, IpAddr::V4(new_best4_data), conf).await;
+        ok &= send_ddns_update(&client, IpAddr::V4(new_best4_data), conf)
+            .await
+            .is_success();
     }
+    ok
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
@@ -848,9 +1028,20 @@ async fn main() {
     info!("Read config file {} finished", &args.config);
     info!("Set log level {:?}", loglevel);
 
+    if let Err(e) = validate_hostname(&conf.hostname) {
+        error!(
+            "Invalid hostname {:?} in the configuration: {}",
+            conf.hostname, e
+        );
+        std::process::exit(1);
+    }
+
     if args.oneshot {
         info!("Running in oneshot mode...");
-        oneshot(&conf).await;
+        if !oneshot(&conf).await {
+            error!("Oneshot DDNS update failed");
+            std::process::exit(1);
+        }
     } else {
         let mut jset = JoinSet::new();
         let (tx, rx) = mpsc::channel(10);
@@ -891,14 +1082,34 @@ mod tests {
         assert!(classify_ddns_response(StatusCode::OK, "nochg 2a02::1").is_success());
         // Case-insensitive keyword matching.
         assert!(classify_ddns_response(StatusCode::OK, "GOOD 1.2.3.4").is_success());
-        // Multi-line body (server sends one line per family) — first token wins.
-        assert!(classify_ddns_response(StatusCode::OK, "good 1.2.3.4\ngood 2a02::1").is_success());
+        // Leading blank lines / CRLF are tolerated.
+        assert!(classify_ddns_response(StatusCode::OK, "\r\ngood 1.2.3.4\r\n").is_success());
+    }
+
+    #[test]
+    fn parse_published_addresses() {
+        // A dual-stack record set answers with IPv4 first, comma-separated (§7).
+        match classify_ddns_response(StatusCode::OK, "good 192.0.2.5,2001:db8::5") {
+            DdnsOutcome::Good(addrs) => assert_eq!(
+                addrs,
+                vec![
+                    "192.0.2.5".parse::<IpAddr>().unwrap(),
+                    "2001:db8::5".parse::<IpAddr>().unwrap()
+                ]
+            ),
+            other => panic!("expected Good with addresses, got {other:?}"),
+        }
+        // A bare keyword yields no addresses, and no false mismatch warning.
+        match classify_ddns_response(StatusCode::OK, "nochg") {
+            DdnsOutcome::NoChg(addrs) => assert!(addrs.is_empty()),
+            other => panic!("expected NoChg, got {other:?}"),
+        }
     }
 
     #[test]
     fn classify_permanent_failures() {
         for body in [
-            "nohost", "notfqdn", "!yours", "badauth", "badagent", "abuse", "!donator",
+            "nohost", "notfqdn", "numhost", "!yours", "badauth", "badagent", "!donator", "!active",
         ] {
             assert!(
                 matches!(
@@ -918,7 +1129,7 @@ mod tests {
     #[test]
     fn classify_transient_failures() {
         assert!(matches!(
-            classify_ddns_response(StatusCode::OK, "911"),
+            classify_ddns_response(StatusCode::INTERNAL_SERVER_ERROR, "911"),
             DdnsOutcome::Transient(_)
         ));
         assert!(matches!(
@@ -928,23 +1139,136 @@ mod tests {
     }
 
     #[test]
+    fn classify_rate_limit_is_retryable_but_slow() {
+        // `abuse` is a rate limit (429), not a permanent error: retry, later (§12.3).
+        let outcome = classify_ddns_response(StatusCode::TOO_MANY_REQUESTS, "abuse");
+        assert!(matches!(outcome, DdnsOutcome::RateLimited(_)));
+        assert!(!outcome.is_success());
+        assert_eq!(outcome.retry_floor_s(), RETRY_RATELIMIT_MIN_S);
+        // Same via the status fallback, for a server with an empty body.
+        assert!(matches!(
+            classify_ddns_response(StatusCode::TOO_MANY_REQUESTS, ""),
+            DdnsOutcome::RateLimited(_)
+        ));
+    }
+
+    #[test]
     fn classify_unknown_body_falls_back_to_status() {
-        // Unknown/empty body with a 2xx is treated as success.
+        // Unknown/empty body with a 2xx is treated as success. This also covers
+        // pre-0.4.0 teleddns-server, which answered 200 with a JSON body.
         assert!(classify_ddns_response(StatusCode::OK, "").is_success());
         assert!(classify_ddns_response(StatusCode::OK, "{\"detail\":\"whatever\"}").is_success());
-        // 5xx / 429 with an unrecognized body -> transient.
+        // 5xx with an unrecognized body -> transient.
         assert!(matches!(
             classify_ddns_response(StatusCode::INTERNAL_SERVER_ERROR, "oops"),
             DdnsOutcome::Transient(_)
         ));
-        assert!(matches!(
-            classify_ddns_response(StatusCode::TOO_MANY_REQUESTS, ""),
-            DdnsOutcome::Transient(_)
-        ));
-        // Other 4xx with an unrecognized body -> permanent.
+        // Other 4xx with an unrecognized body -> permanent. `forbidden` is what the
+        // server's IP allow-list answers with (§1) — not a dyndns2 keyword.
         assert!(matches!(
             classify_ddns_response(StatusCode::BAD_REQUEST, "nope"),
             DdnsOutcome::Permanent(_)
         ));
+        assert!(matches!(
+            classify_ddns_response(StatusCode::FORBIDDEN, "forbidden"),
+            DdnsOutcome::Permanent(_)
+        ));
+    }
+
+    #[test]
+    fn update_url_uses_the_right_parameter_per_family() {
+        let base = "https://ddns.example.com/nic/update";
+        let v4 = build_update_url(base, "192.0.2.1".parse().unwrap(), "host.example.com").unwrap();
+        assert_eq!(
+            v4.as_str(),
+            "https://ddns.example.com/nic/update?myip=192.0.2.1&hostname=host.example.com"
+        );
+        // IPv6 must go in `myipv6` — an IPv6 in `myip` is rejected by generic
+        // dyndns2 services, and IPv4 in `myipv6` is `notfqdn` (§4).
+        let v6 =
+            build_update_url(base, "2001:db8::1".parse().unwrap(), "host.example.com").unwrap();
+        assert_eq!(
+            v6.as_str(),
+            "https://ddns.example.com/nic/update?myipv6=2001%3Adb8%3A%3A1&hostname=host.example.com"
+        );
+        // Existing query parameters in the configured URL are preserved.
+        let extra = build_update_url(
+            "https://ddns.example.com/update?system=dyndns",
+            "192.0.2.1".parse().unwrap(),
+            "host.example.com",
+        )
+        .unwrap();
+        assert!(extra
+            .as_str()
+            .starts_with("https://ddns.example.com/update?system=dyndns&myip=192.0.2.1&hostname="));
+    }
+
+    #[test]
+    fn hostname_validation() {
+        for name in [
+            "host.example.com",
+            "host.example.com.",
+            "*.example.com",
+            "_dmarc.example.com",
+            "a-b.sub.example.com",
+        ] {
+            assert!(
+                validate_hostname(name).is_ok(),
+                "expected {name:?} to be valid"
+            );
+        }
+        for name in [
+            "",
+            "host",                        // not fully qualified
+            "a.example.com,b.example.com", // we send one name per request
+            "host .example.com",
+            "host..example.com",
+            "ho$t.example.com",
+            "*.*.example.com", // wildcard only as the first label
+        ] {
+            assert!(
+                validate_hostname(name).is_err(),
+                "expected {name:?} to be rejected"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn permanent_failure_is_not_retried_and_success_is_adopted() {
+        // No network here: drive the state machine directly.
+        let mut st: PushState<Ipv4Addr> = PushState::default();
+        let addr: Ipv4Addr = "192.0.2.1".parse().unwrap();
+
+        st.confirmed = Some(addr);
+        assert!(st.is_current(Some(addr)), "an acked address is not re-sent");
+
+        // A permanently rejected address stays blocked until the desired value changes.
+        st.confirmed = None;
+        st.rejected = Some(addr);
+        assert!(!st.is_current(Some(addr)));
+        let conf = Config {
+            debug: None,
+            // An unroutable URL: if the guard failed we would attempt a request and
+            // the test would take the HTTP timeout instead of returning at once.
+            ddns_url: "http://127.0.0.1:1/nic/update".to_string(),
+            hostname: "host.example.com".to_string(),
+            enable_ipv6: true,
+            enable_ipv4: true,
+            report_ipv4_private: false,
+            report_ipv6_ula: false,
+            interfaces: vec!["*".to_string()],
+            hooks: None,
+        };
+        st.sync(Some(addr), &build_http_client(), &conf).await;
+        assert_eq!(st.confirmed, None, "no push happened, nothing to confirm");
+        assert_eq!(
+            st.backoff_s, 0,
+            "a blocked address does not schedule a retry"
+        );
+
+        // Losing the address just clears the state — DDNS never deletes a record.
+        st.confirmed = Some(addr);
+        st.sync(None, &build_http_client(), &conf).await;
+        assert_eq!(st.confirmed, None);
     }
 }
