@@ -226,6 +226,11 @@ RestartSec=10
 NoNewPrivileges=yes
 ProtectHome=yes
 PrivateTmp=yes
+# Holds the addresses the server last acknowledged, so a restart does not
+# re-publish them and spend the server's hourly update budget.
+StateDirectory=teleddns
+KillSignal=SIGTERM
+TimeoutStopSec=35
 
 [Install]
 WantedBy=multi-user.target

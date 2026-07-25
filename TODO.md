@@ -227,6 +227,8 @@ when it still matches (the resync timer bounds the staleness risk).
 | `ddns_retry_ratelimit_min` | `900s` | backoff floor after `abuse`/429 |
 | `ddns_resync_period` | `43200s` (12 h) | unconditional resync if any eligible addr |
 | `ddns_kernel_poll_period` | `0` (disabled) | optional periodic full address re-dump |
+| `http_timeout` | `30s` | timeout for one DDNS request (was a constant) |
+| `state_file` | `/var/lib/teleddns/state.json` | confirmed addresses, remembered across restarts (`''` disables) |
 
 Durations parsed as quoted strings (e.g. `"5s"`, `"1h"`) via `humantime-serde`,
 matching teleddns-server's convention.
@@ -236,19 +238,37 @@ implemented but gated behind `ddns_kernel_poll_period` for completeness.
 
 ### Tasks
 
-- [ ] Add `humantime-serde`; add the eight config keys with defaults.
-- [ ] Replace `update_worker` with the `select!` state machine above (the interim
-      `PushState` from §1 — confirmed/rejected/backoff — folds into it).
-- [ ] Sliding-window rate budget per family + `ddns_min_interval`; unit-test that a
-      flapping address cannot exceed `ddns_max_updates_per_hour`.
-- [ ] Exponential backoff with reset-on-success and the `abuse` floor; unit-test the
-      backoff sequence including a rate-limited response.
-- [ ] Resync timer; force-push path (bypasses settle/backoff, not the budget).
-- [ ] Persist `confirmed` state across restarts (`/var/lib/teleddns/state.json`,
+- [x] Add `humantime-serde`; add the config keys with defaults (the eight timing keys
+      plus `http_timeout` and `state_file`). All optional — a 0.3.x config still loads,
+      which is unit-tested.
+- [x] Replace `update_worker` with the `select!` state machine above (the interim
+      `PushState` from §1 — confirmed/rejected/backoff — folded into it).
+- [x] Sliding-window rate budget per family + `ddns_min_interval`; unit-tested against
+      a one-change-per-second flapping address for two hours (asserts no two updates
+      closer than `ddns_min_interval` and no hour containing more than the cap).
+- [x] Exponential backoff with reset-on-success and the `abuse` floor; unit-tested
+      against a refused connection (60s → 120s → 240s → ceiling).
+- [x] Resync timer, counted from the last *attempt* so a permanently rejected name is
+      retried once per period instead of on every wake-up.
+- [x] Forced-push path that bypasses settle and back-off but not the budget — the
+      `forced` argument of `PushState::sync`; the control socket that will set it is §8.
+- [x] Persist `confirmed` state across restarts (`/var/lib/teleddns/state.json`,
       `StateDirectory=teleddns` in the unit) to keep restart loops off the quota.
+      Written via a temp file + rename, keyed by hostname and by the endpoint with the
+      credentials stripped, ignored once older than `ddns_resync_period`.
+- [x] Graceful shutdown on **SIGTERM/SIGINT** as well as SIGHUP (systemd sends
+      SIGTERM); the HUP-only handler used to make `systemctl stop` a hard kill.
+- [x] Also done here, adjacent enough not to defer: startup validation of the timing
+      config and of `ddns_url` (with warnings when the budget exceeds what the server
+      allows), `--oneshot` going through the same state so a cron-driven run does not
+      re-publish an unchanged address, `ddns_kernel_poll_period` as a `tokio::Interval`
+      in the netlink receiver, and no more `.expect()` on the MPSC send path.
 - [ ] Expose the budget + backoff state in the control-socket status dump (§8).
-- [ ] Graceful shutdown on **SIGTERM/SIGINT** as well as SIGHUP (systemd sends
-      SIGTERM); the current HUP-only handler makes `systemctl stop` a hard kill.
+
+> **Done (v0.4.0 WIP):** the whole timing model above. What is not covered: the
+> control socket that would let an operator force an update (§8), and the address
+> metric rework (§4) that would stop a temporary/privacy address from flapping in the
+> first place — the governor currently absorbs that churn instead of preventing it.
 
 ---
 
@@ -564,13 +584,13 @@ token: "tk_..."
 
 ## Cross-cutting code-quality fixes (fold into the above)
 
-- [ ] Shared `reqwest::Client` with timeout (§1) — today each push builds a client
-      and can hang with no timeout, blocking the worker.
-- [ ] Replace `.expect()` on MPSC sends and signal binding with graceful handling.
-- [ ] Single-source the version string (use `env!("CARGO_PKG_VERSION")` for the UA
-      and any logs).
-- [ ] Consider splitting `main.rs` into modules (`config`, `netlink`, `metric`,
-      `ddns`, `hooks`, `control`, `worker`) once it grows with the above.
+- [x] Shared `reqwest::Client` with a configurable timeout (§1, `http_timeout`).
+- [x] Replace `.expect()` on MPSC sends and signal binding with graceful handling
+      (`publish_addrs`, `wait_for_termination`).
+- [x] Single-source the version string (`env!("CARGO_PKG_VERSION")` in the UA).
+- [ ] Split `main.rs` into modules (`config`, `netlink`, `metric`, `ddns`, `hooks`,
+      `control`, `worker`) — it is past 1400 lines after §1/§2 and the test module is
+      now a third of it; this is the next structural step, not optional any more.
 
 ---
 

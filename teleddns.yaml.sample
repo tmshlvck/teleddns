@@ -46,3 +46,44 @@ interfaces:
 # hooks:
 #   - nft_sets_outfile: "/etc/nftables.d/00-localnets.rules"
 #     shell: "nft -f /etc/nftables.conf"
+
+# ---------------------------------------------------------------------------
+# Update timing. Every key below is optional; the defaults shown are what the
+# client uses when the key is absent, and they are chosen to stay inside what
+# teleddns-server permits (60 updates per hour and address family). Durations are
+# written as human-readable strings: '5s', '2min', '15min', '12h'.
+# ---------------------------------------------------------------------------
+
+# How long to wait for the address set to stop changing before publishing. Longer
+# means a link bounce or a DHCP renew collapses into a single update.
+# ddns_settle_delay: '5s'
+
+# Hard minimum between two updates of the same family. The server sustains one per
+# minute; going below this only earns 'abuse' responses.
+# ddns_min_interval: '60s'
+
+# Sliding-window cap per family. Half of the server's 60/hour, so that a flapping
+# address hits our own governor instead of the server's rate limit.
+# ddns_max_updates_per_hour: 30
+
+# Retry pacing after a failed update: the first retry waits ddns_retry_min, then
+# doubles up to ddns_retry_max. A rate-limited answer ('abuse', HTTP 429) waits at
+# least ddns_retry_ratelimit_min, because the server counts a one-hour window.
+# ddns_retry_min: '60s'
+# ddns_retry_max: '1h'
+# ddns_retry_ratelimit_min: '15min'
+
+# Re-publish unconditionally this often, even when nothing changed: insurance
+# against a record lost or changed on the server. Set to '0s' to disable.
+# ddns_resync_period: '12h'
+
+# Re-read the whole address set from the kernel this often. Off by default —
+# netlink notifications are reliable. Set a duration to enable.
+# ddns_kernel_poll_period: '0s'
+
+# Timeout for a single DDNS request.
+# http_timeout: '30s'
+
+# Where the last acknowledged addresses are remembered, so a restart does not
+# re-publish them. Set to '' to disable persistence.
+# state_file: '/var/lib/teleddns/state.json'
