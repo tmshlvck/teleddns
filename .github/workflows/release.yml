@@ -11,9 +11,42 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 
+# Artifacts come in two flavours, deliberately:
+#
+#   * GitHub release binaries are statically linked musl, so they run on any
+#     distribution regardless of its glibc.
+#   * .deb packages are built inside a container of the suite they are published
+#     to, so each one is linked against that suite's glibc and carries correct
+#     dependency metadata.
+#
+# .rpm packages are built natively by COPR, see .github/workflows/copr.yml.
+
 jobs:
+  check-version:
+    name: Check tag matches Cargo.toml
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Compare tag against the crate version
+        id: version
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          crate_version="$(cargo pkgid | sed 's/.*[#@]//')"
+          if [ "$tag_version" != "$crate_version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $crate_version"
+            exit 1
+          fi
+          echo "version=$tag_version" >> "$GITHUB_OUTPUT"
+
   publish-sources:
     name: Publish sources to crates.io
+    needs: check-version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,68 +57,116 @@ jobs:
       - name: Publish to crates.io
         run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
-  # Build .deb packages for multiple architectures
-  build-debs:
-    name: Build .deb (${{ matrix.arch }})
+  # Portable static binaries for the GitHub release.
+  build-binaries:
+    name: Build static binary (${{ matrix.arch }})
+    needs: check-version
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
+          - target: x86_64-unknown-linux-musl
             arch: amd64
-          - target: aarch64-unknown-linux-gnu
+          - target: aarch64-unknown-linux-musl
             arch: arm64
-          - target: armv7-unknown-linux-gnueabihf
+          - target: armv7-unknown-linux-musleabihf
             arch: armhf
-          - target: riscv64gc-unknown-linux-gnu
+          - target: riscv64gc-unknown-linux-musl
             arch: riscv64
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
 
-      - name: Install zig
-        uses: goto-bus-stop/setup-zig@v2
+      # Registers binfmt handlers so the foreign-architecture binary can be
+      # executed directly in the smoke test below.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
-      - name: Install cargo-zigbuild and cargo-deb
+      - name: Install cross
+        run: cargo install cross --locked
+
+      - name: Build
+        run: cross build --release --locked --target ${{ matrix.target }}
+
+      - name: Check the binary is statically linked
         run: |
-          cargo install cargo-zigbuild
-          cargo install cargo-deb
+          bin="target/${{ matrix.target }}/release/teleddns"
+          file "$bin"
+          file "$bin" | grep -q 'statically linked'
 
-      - name: Build with zigbuild
-        run: cargo zigbuild --release --target ${{ matrix.target }}
+      - name: Smoke test under QEMU
+        run: ./target/${{ matrix.target }}/release/teleddns --version
 
-      - name: Build .deb package
-        run: cargo deb --no-build --target ${{ matrix.target }}
-
-      - name: Upload .deb artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: deb-${{ matrix.arch }}
-          path: target/${{ matrix.target }}/debian/*.deb
-
-      - name: Prepare binary for upload
+      - name: Package tarball
         run: |
-          cp target/${{ matrix.target }}/release/teleddns teleddns-${{ matrix.target }}
+          tar -czf "teleddns-${{ matrix.target }}.tar.gz" \
+            -C "target/${{ matrix.target }}/release" teleddns
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
           name: bin-${{ matrix.arch }}
-          path: teleddns-${{ matrix.target }}
+          path: teleddns-${{ matrix.target }}.tar.gz
 
-  # Create GitHub Release with source tarball and binaries
-  github-release:
-    name: Create GitHub Release
-    needs: build-debs
+  # One .deb per suite per architecture, each built against its own suite's glibc.
+  build-debs:
+    name: Build .deb (${{ matrix.suite }}/${{ matrix.arch }})
+    needs: check-version
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [trixie, noble, resolute]
+        arch: [amd64, arm64, armhf, riscv64]
+        include:
+          - suite: trixie
+            image: debian:trixie
+          - suite: noble
+            image: ubuntu:noble
+          - suite: resolute
+            image: ubuntu:resolute
+          - arch: amd64
+            platform: linux/amd64
+          - arch: arm64
+            platform: linux/arm64
+          - arch: armhf
+            platform: linux/arm/v7
+          - arch: riscv64
+            platform: linux/riscv64
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all binary artifacts
+      # Needed to run the built package under the target architecture below.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Build .deb in a ${{ matrix.suite }} container
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work ${{ matrix.image }} \
+            ./ci/build-deb.sh ${{ matrix.arch }} \
+            "${{ needs.check-version.outputs.version }}~${{ matrix.suite }}1"
+
+      - name: Install the package and run it
+        run: |
+          docker run --rm --platform ${{ matrix.platform }} \
+            -v "$PWD/dist:/dist" -w /dist ${{ matrix.image }} \
+            sh -c 'apt-get update -qq && apt-get install -y ./*.deb && teleddns --version'
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.suite }}-${{ matrix.arch }}
+          path: dist/*.deb
+
+  github-release:
+    name: Create GitHub Release
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download binary artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: bin-*
@@ -95,18 +176,17 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            teleddns-*
+            teleddns-*.tar.gz
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Publish to APT repository
   publish-apt:
     name: Publish to APT repo
     needs: build-debs
     runs-on: ubuntu-latest
     steps:
-      - name: Download all .deb artifacts
+      - name: Download .deb artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: deb-*
@@ -118,18 +198,21 @@ jobs:
           SSH_HOST: ${{ secrets.APT_SSH_HOST }}
           SSH_USER: ${{ secrets.APT_SSH_USER }}
         run: |
-          # Setup SSH
           mkdir -p ~/.ssh
           echo "$SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan "$SSH_HOST" >> ~/.ssh/known_hosts
 
-          # Upload and add each .deb file to the repository
+          # Each package goes to the one suite it was built for; the suite is
+          # encoded in the version as <version>~<suite>1.
           for deb in *.deb; do
-            echo "Processing $deb..."
+            suite="$(echo "$deb" | sed -n 's/.*~\([a-z][a-z]*\)[0-9]*_.*/\1/p')"
+            if [ -z "$suite" ]; then
+              echo "::error::cannot determine suite from $deb"
+              exit 1
+            fi
+            echo "Publishing $deb to $suite..."
             scp "$deb" "${SSH_USER}@${SSH_HOST}:/tmp/"
-            ssh "${SSH_USER}@${SSH_HOST}" "cd /srv/apt/www/teleddns && reprepro includedeb trixie /tmp/$deb && reprepro includedeb noble /tmp/$deb && rm /tmp/$deb"
+            ssh "${SSH_USER}@${SSH_HOST}" \
+              "cd /srv/apt/www/teleddns && reprepro includedeb $suite /tmp/$deb && rm /tmp/$deb"
           done
-
-  # Note: COPR builds are handled in .github/workflows/copr.yml (also triggered
-  # on tag push, plus manually via workflow_dispatch).

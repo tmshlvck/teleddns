@@ -82,10 +82,34 @@ get_binary_target() {
     esac
 }
 
+# Pick the APT suite matching this system. Packages are built separately per
+# suite against that suite's glibc, so they are not interchangeable -- installing
+# the wrong one gives a binary that will not start.
+get_apt_suite() {
+    # UBUNTU_CODENAME first: derivatives such as Mint or Pop!_OS carry their own
+    # VERSION_CODENAME but keep the Ubuntu one alongside it.
+    codename="${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}"
+    case "$codename" in
+        trixie|noble|resolute)
+            echo "$codename"
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
 # Install via APT (Debian/Ubuntu/Pop!_OS)
 install_apt() {
     info "Detected Debian-based distribution: $DISTRO_ID"
-    info "Installing from APT repository..."
+
+    SUITE=$(get_apt_suite)
+    if [ -z "$SUITE" ]; then
+        warn "No APT packages for this release (${UBUNTU_CODENAME:-${VERSION_CODENAME:-unknown}})"
+        return 1
+    fi
+
+    info "Installing from APT repository (suite: $SUITE)..."
 
     # Install gnupg if not present
     if ! command -v gpg &> /dev/null; then
@@ -99,7 +123,7 @@ install_apt() {
 
     # Add repository
     info "Adding APT repository..."
-    echo "deb [signed-by=/usr/share/keyrings/teleddns.gpg] https://apt.telephant.eu/teleddns/ stable main" | sudo tee /etc/apt/sources.list.d/teleddns.list > /dev/null
+    echo "deb [signed-by=/usr/share/keyrings/teleddns.gpg] https://apt.telephant.eu/teleddns/ $SUITE main" | sudo tee /etc/apt/sources.list.d/teleddns.list > /dev/null
 
     # Install package
     info "Installing teleddns package..."

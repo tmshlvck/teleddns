@@ -20,9 +20,9 @@ The deploy script automatically detects your distribution and installs using the
 
 | Distribution | Installation Method |
 |--------------|---------------------|
-| Debian, Ubuntu, Pop!_OS, Mint, etc. | APT repository (apt.telephant.eu) |
+| Debian, Ubuntu, Pop!_OS, Mint, etc. (supported suites) | APT repository (apt.telephant.eu) |
 | Fedora | COPR repository |
-| Other Linux | Binary download from GitHub releases |
+| Other Linux, or a release we do not package | Static binary from GitHub releases |
 | Fallback (if binary unavailable) | `cargo install` from crates.io |
 
 The script will:
@@ -48,10 +48,15 @@ sudo journalctl -u teleddns -f
 
 ```bash
 curl -fsSL https://apt.telephant.eu/teleddns/pubkey.gpg | sudo gpg --dearmor -o /usr/share/keyrings/teleddns.gpg
-echo "deb [signed-by=/usr/share/keyrings/teleddns.gpg] https://apt.telephant.eu/teleddns/ stable main" | sudo tee /etc/apt/sources.list.d/teleddns.list
+echo "deb [signed-by=/usr/share/keyrings/teleddns.gpg] https://apt.telephant.eu/teleddns/ $(. /etc/os-release; echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") main" | sudo tee /etc/apt/sources.list.d/teleddns.list
 sudo apt update
 sudo apt install teleddns
 ```
+
+Supported suites are `trixie` (Debian 13), `noble` (Ubuntu 24.04 LTS) and
+`resolute` (Ubuntu 26.04 LTS). Use the suite matching your system — packages are
+built against each suite's glibc and a package from a newer suite will not run on
+an older release. On anything else, use the static binary below.
 
 #### Fedora (COPR)
 
@@ -64,7 +69,31 @@ sudo dnf install teleddns
 
 Pre-compiled binaries for amd64, arm64, armhf, and riscv64 are available on [GitHub Releases](https://github.com/tmshlvck/teleddns/releases).
 
+These are **statically linked** (musl), so they run on any distribution regardless
+of its glibc version. This is the recommended option for distributions we do not
+package for, and the only pre-built option for armhf on non-Debian systems.
+
+One consequence of static linking: name resolution uses musl's own resolver, which
+reads `/etc/resolv.conf` and ignores `nsswitch.conf`. That is fine for the usual
+case of a public DDNS hostname, including on systemd-resolved systems, but if you
+depend on a custom NSS module to resolve your DDNS server, use a package instead.
+
 Then edit and install `teleddns.service`.
+
+#### What each artifact is
+
+| Artifact | Linking | Architectures |
+|---|---|---|
+| GitHub release tarballs | static musl, portable | amd64, arm64, armhf, riscv64 |
+| `.deb` (apt.telephant.eu) | dynamic, built against the glibc of the suite it is published to | amd64, arm64, armhf, riscv64 — per suite |
+| `.rpm` (COPR) | dynamic, built natively by Fedora | x86_64, aarch64, riscv64 |
+
+`.deb` packages are built separately for each supported suite, so the package you
+install always matches your distribution's glibc. A package built for a newer
+release will not run on an older one, which is why they are not interchangeable.
+
+There is **no armv7hf RPM**: Fedora has no 32-bit ARM build target. On 32-bit ARM
+use the `.deb` or the static binary above.
 
 ### Installation from sources
 
