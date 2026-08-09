@@ -46,11 +46,16 @@ jobs:
         run: |
           # Submit build using spec file URL - COPR downloads sources and builds with network
           SPEC_URL="https://raw.githubusercontent.com/tmshlvck/teleddns/${{ steps.tag.outputs.tag }}/teleddns.spec"
+          # Fedora has no 32-bit ARM chroot, so there is no armv7hf RPM; armhf
+          # is served by the .deb and by the static binary from the release.
           copr-cli build tmshlvck/teleddns --nowait \
             -r fedora-43-x86_64 \
             -r fedora-43-aarch64 \
+            -r fedora-43-riscv64 \
             -r fedora-44-x86_64 \
             -r fedora-44-aarch64 \
+            -r fedora-44-riscv64 \
             -r fedora-rawhide-x86_64 \
             -r fedora-rawhide-aarch64 \
+            -r fedora-rawhide-riscv64 \
             "$SPEC_URL"
