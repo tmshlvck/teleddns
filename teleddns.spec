@@ -1,7 +1,7 @@
 # Spec file for Fedora COPR
 #
 # To build locally:
-#   dnf install rust cargo openssl-devel
+#   dnf install rust cargo gcc
 #   rpmbuild -tb teleddns-VERSION.tar.gz
 #
 # COPR builds from this spec file with network access enabled.
@@ -17,7 +17,8 @@ Source0:        https://github.com/tmshlvck/teleddns/archive/refs/tags/v%{versio
 
 BuildRequires:  rust >= 1.77
 BuildRequires:  cargo
-BuildRequires:  openssl-devel
+# gcc is required: the rustls stack pulls in the `ring` crate, which compiles C.
+# (TLS is rustls, not OpenSSL — there is no openssl-devel dependency.)
 BuildRequires:  gcc
 
 # For systemd macros
@@ -25,8 +26,9 @@ BuildRequires:  systemd-rpm-macros
 
 Requires:       systemd
 
-# Rust packages are not portable across architectures
-ExclusiveArch:  x86_64 aarch64
+# Fedora has no 32-bit ARM chroot, so armv7hf RPMs are not possible; armhf users
+# are served by the .deb or the static musl binary from the GitHub release.
+ExclusiveArch:  x86_64 aarch64 riscv64
 
 %description
 TeleDDNS is an advanced DDNS client with daemonization support (as a systemd
