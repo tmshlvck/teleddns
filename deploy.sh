@@ -60,20 +60,21 @@ is_fedora_based() {
     return 1
 }
 
-# Get architecture for binary download
+# Get architecture for binary download. The GitHub release ships statically
+# linked musl binaries, which run on any distribution regardless of its glibc.
 get_binary_target() {
     case "$(uname -m)" in
         x86_64)
-            echo "x86_64-unknown-linux-gnu"
+            echo "x86_64-unknown-linux-musl"
             ;;
         aarch64)
-            echo "aarch64-unknown-linux-gnu"
+            echo "aarch64-unknown-linux-musl"
             ;;
         armv7l)
-            echo "armv7-unknown-linux-gnueabihf"
+            echo "armv7-unknown-linux-musleabihf"
             ;;
         riscv64)
-            echo "riscv64gc-unknown-linux-gnu"
+            echo "riscv64gc-unknown-linux-musl"
             ;;
         *)
             echo ""
@@ -172,17 +173,18 @@ install_cargo() {
         return 1
     fi
 
-    # Check for OpenSSL development headers
+    # TLS is rustls, so no OpenSSL headers are needed. A C compiler is, because
+    # the rustls stack pulls in the `ring` crate.
     if is_debian_based; then
-        if ! dpkg -s libssl-dev &> /dev/null 2>&1; then
-            warn "Installing libssl-dev..."
+        if ! dpkg -s gcc &> /dev/null 2>&1; then
+            warn "Installing gcc..."
             sudo apt-get update
-            sudo apt-get install -y libssl-dev pkg-config
+            sudo apt-get install -y gcc
         fi
     elif is_fedora_based; then
-        if ! rpm -q openssl-devel &> /dev/null 2>&1; then
-            warn "Installing openssl-devel..."
-            sudo dnf -y install openssl-devel pkg-config
+        if ! rpm -q gcc &> /dev/null 2>&1; then
+            warn "Installing gcc..."
+            sudo dnf -y install gcc
         fi
     fi
 
