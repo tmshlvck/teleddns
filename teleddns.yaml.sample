@@ -9,6 +9,9 @@
 # The server provides a REST API endpoint for DDNS updates. You need to set up
 # the server first and obtain credentials (username/password) to configure
 # this client.
+#
+# Unknown keys are refused: teleddns exits with an error naming the key and the
+# line rather than starting up with a silently ignored setting.
 
 ---
 # Enable debug logging (set to true for troubleshooting)

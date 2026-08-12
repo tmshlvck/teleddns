@@ -1191,6 +1191,7 @@ async fn oneshot(conf: &Config) -> bool {
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 struct Hook {
     shell: Option<String>,
     nft_sets_outfile: Option<String>,
@@ -1252,7 +1253,11 @@ fn default_http_timeout() -> Duration {
     Duration::from_secs(30)
 }
 
+/// Unknown keys are refused rather than ignored: the config is usually generated
+/// (deploy.sh, packaging, config management), so a stale or misspelled key is a
+/// mistake worth reporting at startup instead of silently taking the default.
 #[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 struct Config {
     debug: Option<bool>,
     ddns_url: String,
@@ -1280,9 +1285,21 @@ struct Config {
     ddns_retry_max: Duration,
     #[serde(default = "default_retry_ratelimit_min", with = "humantime_serde")]
     ddns_retry_ratelimit_min: Duration,
-    #[serde(default = "default_resync_period", with = "humantime_serde")]
+    // The aliases are the names the released 0.3.x config used for the same
+    // settings. They are accepted so an upgrade does not refuse to start on a config
+    // that tuned them -- a rename is not a typo. `convert-config` (§7) will rewrite
+    // them, after which the aliases can go.
+    #[serde(
+        default = "default_resync_period",
+        with = "humantime_serde",
+        alias = "resync_interval"
+    )]
     ddns_resync_period: Duration,
-    #[serde(default = "default_kernel_poll_period", with = "humantime_serde")]
+    #[serde(
+        default = "default_kernel_poll_period",
+        with = "humantime_serde",
+        alias = "redump_interval"
+    )]
     ddns_kernel_poll_period: Duration,
     #[serde(default = "default_http_timeout", with = "humantime_serde")]
     http_timeout: Duration,
@@ -1369,11 +1386,25 @@ struct Args {
     verbose: clap_verbosity_flag::Verbosity<clap_verbosity_flag::InfoLevel>,
 }
 
+/// Read and parse the config. A bad config is the operator's to fix, not a crash, so
+/// the caller reports it as a message: with `deny_unknown_fields` a stale or
+/// misspelled key ends up here, and serde names both the key and the line.
+fn load_config(path: &str) -> Result<Config, String> {
+    let file = File::open(path).map_err(|e| e.to_string())?;
+    serde_yaml::from_reader(file).map_err(|e| e.to_string())
+}
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
-    let cf = File::open(&args.config).expect("Unable to open configuration file.");
-    let conf: Config = serde_yaml::from_reader(cf).expect("Failed to parse configuration file.");
+    let conf = match load_config(&args.config) {
+        Ok(conf) => conf,
+        Err(e) => {
+            // The logger is not up yet, so this goes straight to stderr.
+            eprintln!("teleddns: {}: {}", args.config, e);
+            std::process::exit(1);
+        }
+    };
 
     let loglevel = match conf.debug {
         Some(false) => args.verbose.log_level_filter(),
@@ -1863,6 +1894,100 @@ hooks:
         assert_eq!(conf.ddns_min_interval, default_min_interval());
         assert_eq!(conf.http_timeout, default_http_timeout());
         assert!(validate_config(&conf).is_ok());
+    }
+
+    /// Uncomment the `# key: value` settings of the sample config, leaving prose and
+    /// the commented hooks block (which has no value on the key line) alone.
+    fn uncomment_settings(src: &str) -> String {
+        src.lines()
+            .map(|line| match line.strip_prefix("# ") {
+                Some(rest) => {
+                    let is_setting = rest.split_once(": ").is_some_and(|(key, value)| {
+                        !key.is_empty()
+                            && key
+                                .chars()
+                                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                            && !value.trim().is_empty()
+                    });
+                    if is_setting {
+                        rest.to_string()
+                    } else {
+                        line.to_string()
+                    }
+                }
+                None => line.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn the_shipped_sample_config_parses() {
+        let sample = include_str!("../teleddns.yaml.sample");
+        let conf: Config = serde_yaml::from_str(sample).expect("the shipped sample must parse");
+        assert!(validate_config(&conf).is_ok());
+
+        // Now with every documented key switched on. `deny_unknown_fields` turns a
+        // stale key in the sample into a broken config for whoever uncomments it, so
+        // the sample has to be checked, not just trusted.
+        let all_keys = uncomment_settings(sample);
+        let conf: Config = serde_yaml::from_str(&all_keys)
+            .expect("every key documented in the sample must be accepted");
+        assert_eq!(conf.ddns_resync_period, secs(12 * 3600));
+        assert_eq!(conf.ddns_max_updates_per_hour, 30);
+        assert!(validate_config(&conf).is_ok());
+    }
+
+    #[test]
+    fn a_released_0_3_x_config_still_loads() {
+        // The keys and value formats of the last released (golang) config, including
+        // the two timing keys that were renamed. Refusing to start on these would
+        // break an unattended upgrade of a client whose whole job is keeping DNS live.
+        let conf: Config = serde_yaml::from_str(
+            r#"
+debug: false
+ddns_url: "https://user:pass@ddns.example.com/ddns/update"
+hostname: "host.example.com"
+enable_ipv6: true
+enable_ipv4: false
+report_ipv4_private: false
+report_ipv6_ula: false
+resync_interval: 24h
+redump_interval: 15m
+interfaces:
+  - '*'
+hooks:
+  - nft_sets_outfile: "/etc/nftables.d/00-localnets.rules"
+    shell: "nft -f /etc/nftables.conf"
+"#,
+        )
+        .expect("a released 0.3.x config must still load");
+        assert_eq!(conf.ddns_resync_period, secs(24 * 3600));
+        assert_eq!(conf.ddns_kernel_poll_period, secs(15 * 60));
+        assert!(validate_config(&conf).is_ok());
+    }
+
+    #[test]
+    fn a_misspelled_config_key_is_rejected() {
+        let base = r#"
+ddns_url: "https://ddns.example.com/nic/update"
+hostname: "host.example.com"
+enable_ipv6: true
+enable_ipv4: true
+interfaces: ["*"]
+"#;
+        let err = serde_yaml::from_str::<Config>(&format!("{base}ddns_min_intervall: '60s'\n"))
+            .expect_err("a misspelled key must not be silently ignored");
+        assert!(
+            err.to_string().contains("ddns_min_intervall"),
+            "the error must name the offending key: {err}"
+        );
+
+        // A typo inside a hook would silently disable the hook, which is worse.
+        assert!(
+            serde_yaml::from_str::<Config>(&format!("{base}hooks:\n  - shel: 'true'\n")).is_err(),
+            "an unknown hook key must be rejected too"
+        );
     }
 
     #[test]
