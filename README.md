@@ -140,15 +140,28 @@ Set log level Info
 Running in oneshot mode...
 Sending DDNS: 2a02:aa11:380:300:ef1a:78c9:f995:e73d
 DDNS GET to URL https://th:<PASSWORD>@slon.telephant.eu/ddns/update?myipv6=2a02%3Aaa11%3A380%3A300%3Aef1a%3A78c9%3Af995%3Ae73d&hostname=tapir.d.telephant.eu succeeded: HTTP 200 OK, body: "good 2a02:aa11:380:300:ef1a:78c9:f995:e73d"
-Saved state to "/var/lib/teleddns/state.json"
 Sucessfully shutdown
 ```
 
-A second run right afterwards publishes nothing and says so — the address is already
-on record:
-```
-Adopting 2a02:aa11:380:300:ef1a:78c9:f995:e73d from the state file (confirmed 12s ago)
-```
+It exits non-zero if the update did not go through, so it is also usable as a check.
+
+### Daemon mode vs. `--oneshot`
+
+**Run the daemon for normal operation.** It watches Netlink and publishes when an
+address actually changes, which is what the DDNS protocol expects. It is also the
+cheaper option locally: one process with a small resident set, no repeated
+interpreter or binary start-up, and no work at all while the address is stable.
+
+**`--oneshot` is a manual tool** for forcing an update through and for debugging the
+DDNS exchange and the hook scripts. Every run publishes unconditionally.
+
+**Running `--oneshot` from cron or a timer is an anti-pattern.** It re-publishes an
+address that has not changed on every tick, which is exactly what the server's rate
+limit exists to stop — a five-minute timer spends 12 updates per hour per family for
+no benefit, and a one-minute timer sits permanently on `abuse`. It also reacts to a
+real address change up to a whole period late, where the daemon reacts in seconds.
+If you are reaching for a timer because the daemon is not picking a change up, that
+is worth reporting as a bug rather than working around.
 
 ## Update timing and rate limiting
 
@@ -169,7 +182,6 @@ does.
 | `ddns_resync_period` | `12h` | re-publish unconditionally this often (`0s` disables) |
 | `ddns_kernel_poll_period` | `0s` (off) | periodically re-read all addresses from the kernel |
 | `http_timeout` | `30s` | timeout for one DDNS request |
-| `state_file` | `/var/lib/teleddns/state.json` | remembers the acknowledged addresses across restarts (`''` disables) |
 
 Behaviour worth knowing:
 
@@ -177,13 +189,12 @@ Behaviour worth knowing:
   and friends mean the request or the configuration is wrong; the client logs an
   ERROR and waits for the address to change or for the next resync tick instead of
   hammering the server. See [DYNDNS2.md](DYNDNS2.md) for the full keyword table.
-- **The state file keeps restarts cheap.** Without it, every restart re-publishes
-  the current address; with a crash loop that alone can exhaust the hourly budget.
-  It is ignored once it is older than `ddns_resync_period`, and it is not believed
-  if the hostname or the server in the config changed.
-- **`teleddns -o` uses the same state**, so running it from cron or a
-  NetworkManager dispatcher script does not re-publish an unchanged address on
-  every tick. It exits non-zero when the update did not go through.
+- **Nothing is remembered across restarts.** The daemon starts with a clean slate
+  and publishes the current address once on startup, which costs one update per
+  family. That is deliberate: keeping no state on disk keeps the client simple, and
+  one update per restart is nowhere near the budget. The shipped unit sets
+  `StartLimitBurst` so a crash loop gives up instead of restarting forever.
+- **`teleddns -o` always publishes.** It is a manual tool — see below.
 - **If the governor keeps holding updates back** (a WARN in the log), the address is
   flapping — usually an RFC 4941 temporary/privacy address being picked. Fix the
   selection, not the limit.

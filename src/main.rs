@@ -934,8 +934,6 @@ impl Resync {
 struct PushState<A> {
     /// Last value the server acknowledged.
     confirmed: Option<A>,
-    /// When it acknowledged it (persisted, so a restart can adopt it).
-    confirmed_at: Option<SystemTime>,
     /// Value the server rejected permanently — do not send it again.
     rejected: Option<A>,
     /// Last time we sent anything for this family; drives the resync tick.
@@ -951,7 +949,6 @@ impl<A> PushState<A> {
     fn new(conf: &Config) -> Self {
         PushState {
             confirmed: None,
-            confirmed_at: None,
             rejected: None,
             last_attempt: None,
             next_retry: None,
@@ -980,30 +977,6 @@ impl<A> PushState<A> {
 }
 
 impl<A: Copy + PartialEq + Into<IpAddr> + std::fmt::Display> PushState<A> {
-    /// Adopt an address a previous run had confirmed. Stale state is ignored: it must
-    /// not be able to suppress an update forever if the record changed meanwhile.
-    fn adopt(&mut self, addr: A, confirmed_at: SystemTime, conf: &Config) {
-        let age = SystemTime::now()
-            .duration_since(confirmed_at)
-            .unwrap_or(conf.ddns_resync_period);
-        if !conf.ddns_resync_period.is_zero() && age >= conf.ddns_resync_period {
-            info!(
-                "Not adopting {} from the state file: last confirmed {} ago",
-                addr,
-                fmt_dur(age)
-            );
-            return;
-        }
-        info!(
-            "Adopting {} from the state file (confirmed {} ago)",
-            addr,
-            fmt_dur(age)
-        );
-        self.confirmed = Some(addr);
-        self.confirmed_at = Some(confirmed_at);
-        self.last_attempt = Some(confirmed_at);
-    }
-
     /// Bring the server in line with `desired`. `forced` (a control-socket
     /// `send_update`, §8) skips the back-off, but never the rate budget.
     ///
@@ -1025,7 +998,6 @@ impl<A: Copy + PartialEq + Into<IpAddr> + std::fmt::Display> PushState<A> {
                 info!("No eligible address left to publish; leaving the record as it is");
             }
             self.confirmed = None;
-            self.confirmed_at = None;
             self.clear_retry();
             return None;
         };
@@ -1081,7 +1053,6 @@ impl<A: Copy + PartialEq + Into<IpAddr> + std::fmt::Display> PushState<A> {
 
         if outcome.is_success() {
             self.confirmed = Some(addr);
-            self.confirmed_at = Some(now);
             self.rejected = None;
             self.clear_retry();
             return self.resync(now, conf).wake();
@@ -1109,138 +1080,6 @@ impl<A: Copy + PartialEq + Into<IpAddr> + std::fmt::Display> PushState<A> {
     }
 }
 
-/// One address as remembered on disk.
-#[derive(Debug, Serialize, Deserialize)]
-struct PersistedAddr<A> {
-    addr: A,
-    /// Unix timestamp of the acknowledgement.
-    updated: u64,
-}
-
-/// What a previous run confirmed. Keyed by endpoint and hostname so that state
-/// written for a different server or name is not believed.
-#[derive(Debug, Serialize, Deserialize)]
-struct PersistedState {
-    endpoint: String,
-    hostname: String,
-    #[serde(default)]
-    v4: Option<PersistedAddr<Ipv4Addr>>,
-    #[serde(default)]
-    v6: Option<PersistedAddr<Ipv6Addr>>,
-}
-
-fn unix_ts(t: SystemTime) -> u64 {
-    t.duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-/// The update endpoint with the credentials stripped: it identifies the server the
-/// state belongs to, and it is written to a file, so it must not carry a password.
-fn state_endpoint(ddns_url: &str) -> String {
-    match reqwest::Url::parse(ddns_url) {
-        Ok(mut url) => {
-            let _ = url.set_username("");
-            let _ = url.set_password(None);
-            url.to_string()
-        }
-        // Unparseable URLs are rejected at startup; be defensive rather than leak one.
-        Err(_) => String::new(),
-    }
-}
-
-/// Remember the confirmed addresses, so that a restart — or a systemd restart loop —
-/// does not spend the server's hourly update budget re-publishing what is already on
-/// record (§10). Written via a temporary file so a crash cannot leave a torn state.
-fn save_state(conf: &Config, state4: &PushState<Ipv4Addr>, state6: &PushState<Ipv6Addr>) {
-    if conf.state_file.is_empty() {
-        return;
-    }
-    let persisted = PersistedState {
-        endpoint: state_endpoint(&conf.ddns_url),
-        hostname: conf.hostname.clone(),
-        v4: state4.confirmed.map(|addr| PersistedAddr {
-            addr,
-            updated: unix_ts(state4.confirmed_at.unwrap_or_else(SystemTime::now)),
-        }),
-        v6: state6.confirmed.map(|addr| PersistedAddr {
-            addr,
-            updated: unix_ts(state6.confirmed_at.unwrap_or_else(SystemTime::now)),
-        }),
-    };
-    let json = match serde_json::to_vec_pretty(&persisted) {
-        Ok(j) => j,
-        Err(e) => {
-            warn!("Failed to serialize the state: {}", e);
-            return;
-        }
-    };
-    let path = std::path::Path::new(&conf.state_file);
-    if let Some(dir) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(dir) {
-            warn!("Failed to create the state directory {:?}: {}", dir, e);
-            return;
-        }
-    }
-    let tmp = path.with_extension("tmp");
-    if let Err(e) = std::fs::write(&tmp, &json) {
-        warn!("Failed to write the state file {:?}: {}", tmp, e);
-        return;
-    }
-    if let Err(e) = std::fs::rename(&tmp, path) {
-        warn!("Failed to replace the state file {:?}: {}", path, e);
-        return;
-    }
-    debug!("Saved state to {:?}", path);
-}
-
-fn load_state(conf: &Config, state4: &mut PushState<Ipv4Addr>, state6: &mut PushState<Ipv6Addr>) {
-    if conf.state_file.is_empty() {
-        return;
-    }
-    let raw = match std::fs::read_to_string(&conf.state_file) {
-        Ok(r) => r,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            debug!("No state file at {} yet", conf.state_file);
-            return;
-        }
-        Err(e) => {
-            warn!("Failed to read the state file {}: {}", conf.state_file, e);
-            return;
-        }
-    };
-    let persisted: PersistedState = match serde_json::from_str(&raw) {
-        Ok(p) => p,
-        Err(e) => {
-            warn!(
-                "Ignoring an unreadable state file {}: {}",
-                conf.state_file, e
-            );
-            return;
-        }
-    };
-    if persisted.hostname != conf.hostname || persisted.endpoint != state_endpoint(&conf.ddns_url) {
-        info!(
-            "Ignoring the state file: it was written for {} at {}",
-            persisted.hostname, persisted.endpoint
-        );
-        return;
-    }
-    if let Some(p) = persisted.v4 {
-        state4.adopt(
-            p.addr,
-            SystemTime::UNIX_EPOCH + Duration::from_secs(p.updated),
-            conf,
-        );
-    }
-    if let Some(p) = persisted.v6 {
-        state6.adopt(
-            p.addr,
-            SystemTime::UNIX_EPOCH + Duration::from_secs(p.updated),
-            conf,
-        );
-    }
-}
 
 /// Sleep until `deadline`, or forever when there is nothing scheduled.
 async fn sleep_until_opt(deadline: Option<SystemTime>) {
@@ -1259,8 +1098,6 @@ async fn update_worker(mut rx: Receiver<HashMap<IfaceIpAddr, IfaceIpAddrData>>, 
     let client = build_http_client(&conf);
     let mut state4: PushState<Ipv4Addr> = PushState::new(&conf);
     let mut state6: PushState<Ipv6Addr> = PushState::new(&conf);
-    load_state(&conf, &mut state4, &mut state6);
-    let mut saved = (state4.confirmed, state6.confirmed);
 
     let mut current_addrs: Option<HashMap<IfaceIpAddr, IfaceIpAddrData>> = None;
     let (mut desired4, mut desired6): (Option<Ipv4Addr>, Option<Ipv6Addr>) = (None, None);
@@ -1314,11 +1151,6 @@ async fn update_worker(mut rx: Receiver<HashMap<IfaceIpAddr, IfaceIpAddrData>>, 
             Some(d) => debug!("Next scheduled attempt in {}", fmt_dur(d)),
             None => debug!("Nothing scheduled; waiting for an address change"),
         }
-
-        if (state4.confirmed, state6.confirmed) != saved {
-            saved = (state4.confirmed, state6.confirmed);
-            save_state(&conf, &state4, &state6);
-        }
     }
 }
 
@@ -1346,20 +1178,15 @@ async fn oneshot(conf: &Config) -> bool {
     let client = build_http_client(conf);
     let (best6, best4) = select_best(&iface_addrs_map, conf);
 
-    // Go through the same state as the daemon: a `--oneshot` run on a timer (a cron
-    // job, a NetworkManager dispatcher script) would otherwise re-publish an
-    // unchanged address on every tick and eat the server's hourly budget. The state
-    // is ignored once it is older than `ddns_resync_period`, so a periodic run still
-    // refreshes the record twice a day.
+    // `--oneshot` is an operator action: force the update through and report what
+    // happened. It starts from empty state, so there is nothing to hold it back —
+    // no debounce, no back-off, nothing previously confirmed to compare against.
+    // Continuous operation is the daemon's job; see the README.
     let mut state4: PushState<Ipv4Addr> = PushState::new(conf);
     let mut state6: PushState<Ipv6Addr> = PushState::new(conf);
-    load_state(conf, &mut state4, &mut state6);
-    state6.sync(best6, false, &client, conf).await;
-    state4.sync(best4, false, &client, conf).await;
-    save_state(conf, &state4, &state6);
+    state6.sync(best6, true, &client, conf).await;
+    state4.sync(best4, true, &client, conf).await;
 
-    // The server holds what we wanted it to hold — whether we pushed it just now or
-    // a previous run did.
     state4.confirmed == best4 && state6.confirmed == best6
 }
 
@@ -1425,10 +1252,6 @@ fn default_http_timeout() -> Duration {
     Duration::from_secs(30)
 }
 
-fn default_state_file() -> String {
-    "/var/lib/teleddns/state.json".to_string()
-}
-
 #[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
 struct Config {
     debug: Option<bool>,
@@ -1464,10 +1287,6 @@ struct Config {
     #[serde(default = "default_http_timeout", with = "humantime_serde")]
     http_timeout: Duration,
 
-    /// Where the last confirmed addresses are remembered across restarts. Set to
-    /// an empty string to disable persistence.
-    #[serde(default = "default_state_file")]
-    state_file: String,
 }
 
 /// Startup sanity checks. Everything that would otherwise only show up as a server
@@ -1809,8 +1628,6 @@ mod tests {
             ddns_resync_period: default_resync_period(),
             ddns_kernel_poll_period: default_kernel_poll_period(),
             http_timeout: default_http_timeout(),
-            // No persistence unless a test asks for it.
-            state_file: String::new(),
         }
     }
 
@@ -1991,7 +1808,6 @@ mod tests {
         let addr: Ipv4Addr = "192.0.2.1".parse().unwrap();
 
         st.confirmed = Some(addr);
-        st.confirmed_at = Some(SystemTime::now());
         st.last_attempt = Some(SystemTime::now());
         let wake = st.sync(Some(addr), false, &client, &conf).await;
         assert_eq!(st.backoff, Duration::ZERO, "nothing was sent");
@@ -2003,52 +1819,6 @@ mod tests {
         // Losing the address just clears our state — DDNS never deletes a record (§6).
         assert_eq!(st.sync(None, false, &client, &conf).await, None);
         assert_eq!(st.confirmed, None);
-    }
-
-    #[test]
-    fn state_is_kept_across_restarts() {
-        let mut conf = test_config();
-        let path = std::env::temp_dir().join(format!("teleddns-state-{}.json", std::process::id()));
-        conf.state_file = path.to_string_lossy().to_string();
-        conf.ddns_url = "https://user:secret@ddns.example.com/nic/update".to_string();
-        let addr4: Ipv4Addr = "192.0.2.1".parse().unwrap();
-
-        let mut s4: PushState<Ipv4Addr> = PushState::new(&conf);
-        let s6: PushState<Ipv6Addr> = PushState::new(&conf);
-        s4.confirmed = Some(addr4);
-        s4.confirmed_at = Some(SystemTime::now());
-        save_state(&conf, &s4, &s6);
-
-        let raw = std::fs::read_to_string(&path).expect("state file");
-        assert!(
-            !raw.contains("secret"),
-            "the state file must not carry credentials: {raw}"
-        );
-
-        // A fresh process adopts it and therefore does not re-publish anything.
-        let (mut l4, mut l6): (PushState<Ipv4Addr>, PushState<Ipv6Addr>) =
-            (PushState::new(&conf), PushState::new(&conf));
-        load_state(&conf, &mut l4, &mut l6);
-        assert_eq!(l4.confirmed, Some(addr4));
-        assert_eq!(l6.confirmed, None);
-
-        // State written for another name or another server is not believed.
-        let mut other = conf.clone();
-        other.hostname = "other.example.com".to_string();
-        let (mut o4, mut o6): (PushState<Ipv4Addr>, PushState<Ipv6Addr>) =
-            (PushState::new(&other), PushState::new(&other));
-        load_state(&other, &mut o4, &mut o6);
-        assert_eq!(o4.confirmed, None);
-
-        // Stale state must not suppress an update forever.
-        s4.confirmed_at = Some(SystemTime::now() - conf.ddns_resync_period - secs(60));
-        save_state(&conf, &s4, &s6);
-        let (mut st4, mut st6): (PushState<Ipv4Addr>, PushState<Ipv6Addr>) =
-            (PushState::new(&conf), PushState::new(&conf));
-        load_state(&conf, &mut st4, &mut st6);
-        assert_eq!(st4.confirmed, None);
-
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -2071,7 +1841,6 @@ ddns_resync_period: "6h"
         assert_eq!(conf.ddns_resync_period, secs(6 * 3600));
         // Unset keys keep their defaults.
         assert_eq!(conf.ddns_retry_max, default_retry_max());
-        assert_eq!(conf.state_file, default_state_file());
         assert!(validate_config(&conf).is_ok());
     }
 

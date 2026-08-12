@@ -83,7 +83,3 @@ interfaces:
 
 # Timeout for a single DDNS request.
 # http_timeout: '30s'
-
-# Where the last acknowledged addresses are remembered, so a restart does not
-# re-publish them. Set to '' to disable persistence.
-# state_file: '/var/lib/teleddns/state.json'

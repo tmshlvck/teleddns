@@ -90,8 +90,6 @@ than discovering it through an `abuse`:
 - a sliding one-hour window capped at `ddns_max_updates_per_hour` (30, half of what
   the server allows), so our own governor trips first;
 - exponential back-off on failure, with an hour-scale floor after `abuse`;
-- the confirmed addresses persisted to `state_file`, so a restart — or a systemd
-  restart loop — does not re-publish what is already on record;
 - an unconditional `ddns_resync_period` (12 h) re-publish, which is also the only
   thing that ever retries a permanently rejected name.
 
