@@ -111,6 +111,10 @@ Sample configuration file
 .B 0
 Successful operation
 .TP
+.B 1
+The configuration file could not be read, contains an unknown key, or failed
+validation. The message names the offending key and line.
+.TP
 .B non-zero
 An error occurred. In \fB\-\-oneshot\fR mode this also covers a DDNS update
 that did not go through.

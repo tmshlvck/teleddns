@@ -108,6 +108,11 @@ Then edit and install `teleddns.service`.
 
 ### Setup the client
 
+Unknown keys in the configuration are **refused**, not ignored: teleddns exits with
+an error naming the offending key and the line it is on, and listing the keys it does
+accept. A misspelled setting is a mistake worth seeing at startup rather than one that
+silently leaves the default in place.
+
 Create configuration file (modify the following example):
 ```
 sudo mkdir /etc/teleddns/
