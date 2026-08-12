@@ -7,7 +7,7 @@
 # COPR builds from this spec file with network access enabled.
 
 Name:           teleddns
-Version:        0.2.0
+Version:        0.4.0
 Release:        1%{?dist}
 Summary:        Advanced DDNS client with Netlink support
 
@@ -93,31 +93,18 @@ fi
 %dir %{_sysconfdir}/teleddns
 
 %changelog
-* Mon Dec 15 2025 Tomas Hlavacek <tmshlvck@gmail.com> - 0.2.0-1
-- Major version bump to v0.2.0
-- CI/CD improvements: GitHub Actions pipeline fixes, COPR build enhancements
-- Packaging: deb builds for multiple architectures (amd64, arm64, armhf, riscv64)
-- Build system: cross-compilation fixes, vendor tarball improvements
-- Debian/Ubuntu repository integration
-
-* Mon Dec 15 2025 Tomas Hlavacek <tmshlvck@gmail.com> - 0.1.14-1
-- Version bump
-
-* Sun Dec 15 2025 Tomas Hlavacek <tmshlvck@gmail.com> - 0.1.13-1
-- Simplify packaging: use cargo-deb for .deb, COPR with network for RPM
-- Drop PPA support, use cross-compiled .deb binaries instead
-- Build .deb for amd64, arm64, armhf, riscv64
-
-* Sun Dec 15 2025 Tomas Hlavacek <tmshlvck@gmail.com> - 0.1.12-1
-- Attempted PPA packaging fixes (superseded)
-
-* Sat Dec 13 2025 Tomas Hlavacek <tmshlvck@gmail.com> - 0.1.11-1
-- Suppress netlink-packet-route kernel compatibility warnings unless debug mode
-
-* Sat Dec 13 2025 Tomas Hlavacek <tmshlvck@gmail.com> - 0.1.10-1
-- Add RPM spec and Debian packaging
-- Add Packit integration for automated COPR builds
-
-* Fri Dec 05 2025 Tomas Hlavacek <tmshlvck@gmail.com> - 0.1.9-1
-- Handle deprecated IPv6 addresses properly
-- Align versions to v0.1.8
+* Thu Aug 13 2026 Tomas Hlavacek <tmshlvck@gmail.com> - 0.4.0-1
+- First release of the Rust rewrite; the changelog starts here, earlier entries
+  described the Go implementation and do not apply to this package.
+- dyndns2: IPv6 is sent as myipv6, the response body keyword is parsed and
+  classified, and a stable User-Agent is sent. Permanent failures are no longer
+  retried.
+- Update timing reworked around the server's rate limit: debounce, exponential
+  back-off, a client-side hourly budget per address family, and a periodic
+  resync. Timing is configurable; every key is optional.
+- Unknown configuration keys are refused instead of silently ignored, and a bad
+  config reports an error rather than panicking.
+- --oneshot always publishes and exits non-zero when the update fails.
+- Graceful shutdown on SIGTERM and SIGINT as well as SIGHUP.
+- riscv64 RPMs are built; Fedora has no 32-bit ARM target, so there is no
+  armv7hf RPM.
