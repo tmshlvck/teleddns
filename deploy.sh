@@ -243,6 +243,9 @@ install_systemd_service() {
 Description=TeleDDNS - Advanced DDNS Client
 After=network-online.target
 Wants=network-online.target
+# Give up rather than restart forever: each start publishes the current address.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -252,9 +255,6 @@ RestartSec=10
 NoNewPrivileges=yes
 ProtectHome=yes
 PrivateTmp=yes
-# Holds the addresses the server last acknowledged, so a restart does not
-# re-publish them and spend the server's hourly update budget.
-StateDirectory=teleddns
 KillSignal=SIGTERM
 TimeoutStopSec=35
 

@@ -95,11 +95,6 @@ Periodically re-read all addresses from the kernel. Default: \fI0s\fR (off)
 .TP
 .B http_timeout
 Timeout for a single DDNS request. Default: \fI30s\fR
-.TP
-.B state_file
-File remembering the addresses the server acknowledged, so a restart does not
-re-publish them. Empty string disables persistence.
-Default: \fI/var/lib/teleddns/state.json\fR
 .SH SIGNALS
 .TP
 .B SIGTERM\fR, \fBSIGINT\fR, \fBSIGHUP
@@ -111,9 +106,6 @@ Main configuration file (created by user)
 .TP
 .I /usr/share/doc/teleddns/teleddns.yaml.sample
 Sample configuration file
-.TP
-.I /var/lib/teleddns/state.json
-Addresses last acknowledged by the server
 .SH EXIT STATUS
 .TP
 .B 0

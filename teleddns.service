@@ -2,6 +2,10 @@
 Description=TeleDDNS - Advanced DDNS Client
 After=network-online.target
 Wants=network-online.target
+# Give up rather than restart forever. Each start publishes the current address,
+# so an endless crash loop would spend the server's hourly update budget.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -11,10 +15,6 @@ RestartSec=10
 NoNewPrivileges=yes
 ProtectHome=yes
 PrivateTmp=yes
-# /var/lib/teleddns holds the addresses the server last acknowledged, so that a
-# restart (or a restart loop) does not re-publish an unchanged address and spend
-# the server's hourly update budget.
-StateDirectory=teleddns
 # The daemon shuts down on SIGTERM; give it a moment to finish an update in flight.
 KillSignal=SIGTERM
 TimeoutStopSec=35
