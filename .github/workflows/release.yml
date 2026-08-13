@@ -69,6 +69,11 @@ jobs:
           cargo publish --locked
 
   # Portable static binaries for the GitHub release.
+  #
+  # No riscv64 here: `cross` publishes no released image for
+  # riscv64gc-unknown-linux-musl (only the `main` and `edge` tags exist), and the
+  # alternatives were a different build tool or pinning an unreleased image.
+  # riscv64 is served by the .deb and by the COPR RPM instead.
   build-binaries:
     name: Build static binary (${{ matrix.arch }})
     needs: check-version
@@ -83,8 +88,6 @@ jobs:
             arch: arm64
           - target: armv7-unknown-linux-musleabihf
             arch: armhf
-          - target: riscv64gc-unknown-linux-musl
-            arch: riscv64
     steps:
       - uses: actions/checkout@v4
 

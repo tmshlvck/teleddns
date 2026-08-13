@@ -67,7 +67,7 @@ sudo dnf install teleddns
 
 #### Binary Download
 
-Pre-compiled binaries for amd64, arm64, armhf, and riscv64 are available on [GitHub Releases](https://github.com/tmshlvck/teleddns/releases).
+Pre-compiled binaries for amd64, arm64 and armhf are available on [GitHub Releases](https://github.com/tmshlvck/teleddns/releases).
 
 These are **statically linked** (musl), so they run on any distribution regardless
 of its glibc version. This is the recommended option for distributions we do not
@@ -84,7 +84,7 @@ Then edit and install `teleddns.service`.
 
 | Artifact | Linking | Architectures |
 |---|---|---|
-| GitHub release tarballs | static musl, portable | amd64, arm64, armhf, riscv64 |
+| GitHub release tarballs | static musl, portable | amd64, arm64, armhf |
 | `.deb` (apt.telephant.eu) | dynamic, built against the glibc of the suite it is published to | amd64, arm64, armhf, riscv64 — per suite |
 | `.rpm` (COPR) | dynamic, built natively by Fedora | x86_64, aarch64, riscv64 |
 
@@ -94,6 +94,10 @@ release will not run on an older one, which is why they are not interchangeable.
 
 There is **no armv7hf RPM**: Fedora has no 32-bit ARM build target. On 32-bit ARM
 use the `.deb` or the static binary above.
+
+There is **no static riscv64 binary**: the cross-compilation toolchain we use has no
+released riscv64 musl image. On riscv64 use the `.deb` or the RPM, both of which are
+built for it, or build from source.
 
 ### Installation from sources
 

@@ -73,9 +73,8 @@ get_binary_target() {
         armv7l)
             echo "armv7-unknown-linux-musleabihf"
             ;;
-        riscv64)
-            echo "riscv64gc-unknown-linux-musl"
-            ;;
+        # No riscv64: there is no static binary for it. riscv64 is served by the
+        # .deb and the COPR RPM, and otherwise falls back to building from source.
         *)
             echo ""
             ;;
