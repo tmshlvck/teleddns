@@ -44,9 +44,11 @@ jobs:
           fi
           echo "version=$tag_version" >> "$GITHUB_OUTPUT"
 
+  # Last, and only once everything else has built: publishing to crates.io cannot
+  # be undone, so a failure anywhere else must not leave a version stranded there.
   publish-sources:
     name: Publish sources to crates.io
-    needs: check-version
+    needs: [build-binaries, build-debs]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -55,7 +57,16 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Publish to crates.io
-        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        env:
+          # Passed in the environment rather than on the command line, where the
+          # token would show up in a process listing.
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
+            echo "::error::the CARGO_REGISTRY_TOKEN secret is not set"
+            exit 1
+          fi
+          cargo publish --locked
 
   # Portable static binaries for the GitHub release.
   build-binaries:

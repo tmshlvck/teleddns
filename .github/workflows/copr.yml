@@ -31,16 +31,21 @@ jobs:
           sudo apt-get install -y python3-pip
           pip3 install copr-cli
 
+      # COPR_TOKEN holds the whole config block as downloaded from
+      # https://copr.fedorainfracloud.org/api/ -- [copr-cli] header, login,
+      # username, token and copr_url -- not just the token field. It is written
+      # verbatim; assembling a config around it produced a duplicate `login` key.
       - name: Configure copr-cli
+        env:
+          COPR_CONFIG: ${{ secrets.COPR_TOKEN }}
         run: |
+          if [ -z "$COPR_CONFIG" ]; then
+            echo "::error::the COPR_TOKEN secret is empty"
+            exit 1
+          fi
           mkdir -p ~/.config
-          cat > ~/.config/copr << EOF
-          [copr-cli]
-          login = ${{ secrets.COPR_LOGIN }}
-          username = tmshlvck
-          token = ${{ secrets.COPR_TOKEN }}
-          copr_url = https://copr.fedorainfracloud.org
-          EOF
+          printf '%s\n' "$COPR_CONFIG" > ~/.config/copr
+          chmod 600 ~/.config/copr
 
       - name: Submit COPR build
         run: |
