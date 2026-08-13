@@ -51,16 +51,12 @@ jobs:
         run: |
           # Submit build using spec file URL - COPR downloads sources and builds with network
           SPEC_URL="https://raw.githubusercontent.com/tmshlvck/teleddns/${{ steps.tag.outputs.tag }}/teleddns.spec"
-          # Fedora has no 32-bit ARM chroot, so there is no armv7hf RPM; armhf
-          # is served by the .deb and by the static binary from the release.
-          copr-cli build tmshlvck/teleddns --nowait \
-            -r fedora-43-x86_64 \
-            -r fedora-43-aarch64 \
-            -r fedora-43-riscv64 \
-            -r fedora-44-x86_64 \
-            -r fedora-44-aarch64 \
-            -r fedora-44-riscv64 \
-            -r fedora-rawhide-x86_64 \
-            -r fedora-rawhide-aarch64 \
-            -r fedora-rawhide-riscv64 \
-            "$SPEC_URL"
+          # No -r flags on purpose: the build goes to whichever chroots are enabled
+          # on the COPR project, so adding or dropping a Fedora release or an
+          # architecture is a project setting and needs no change here.
+          #
+          # The remaining constraint that does live in this repo is ExclusiveArch in
+          # teleddns.spec (x86_64, aarch64, riscv64). Fedora has no 32-bit ARM
+          # chroot, so there is never an armv7hf RPM; armhf is served by the .deb
+          # and by the static binary from the release.
+          copr-cli build tmshlvck/teleddns --nowait "$SPEC_URL"
