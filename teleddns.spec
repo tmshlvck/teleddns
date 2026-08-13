@@ -7,7 +7,7 @@
 # COPR builds from this spec file with network access enabled.
 
 Name:           teleddns
-Version:        0.4.0
+Version:        0.4.1
 Release:        1%{?dist}
 Summary:        Advanced DDNS client with Netlink support
 
@@ -93,6 +93,14 @@ fi
 %dir %{_sysconfdir}/teleddns
 
 %changelog
+* Thu Aug 13 2026 Tomas Hlavacek <tmshlvck@gmail.com> - 0.4.1-1
+- Release pipeline fixes only; no functional change to the client since 0.4.0.
+- The 0.4.0 tag published its .deb packages, but the COPR and crates.io steps
+  failed on credential handling, so this is the first 0.4.x RPM.
+- riscv64 static binaries are no longer published: the cross-compilation
+  toolchain has no released riscv64 musl image. riscv64 is served by this RPM
+  and by the .deb.
+
 * Thu Aug 13 2026 Tomas Hlavacek <tmshlvck@gmail.com> - 0.4.0-1
 - First release of the Rust rewrite; the changelog starts here, earlier entries
   described the Go implementation and do not apply to this package.
