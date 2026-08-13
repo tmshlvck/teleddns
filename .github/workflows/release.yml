@@ -95,7 +95,13 @@ jobs:
         run: |
           bin="target/${{ matrix.target }}/release/teleddns"
           file "$bin"
-          file "$bin" | grep -q 'statically linked'
+          # x86_64 musl links static-pie and reports "static-pie linked", the other
+          # targets report "statically linked". Both are static, so assert the
+          # absence of a dynamic interpreter rather than matching either spelling.
+          if file "$bin" | grep -q 'dynamically linked'; then
+            echo "::error::$bin is dynamically linked, expected a static binary"
+            exit 1
+          fi
 
       - name: Smoke test under QEMU
         run: ./target/${{ matrix.target }}/release/teleddns --version
