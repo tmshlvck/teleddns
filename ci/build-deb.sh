@@ -21,6 +21,7 @@ case "$deb_arch" in
     amd64)   rust_target=x86_64-unknown-linux-gnu ;      gnu_prefix=x86_64-linux-gnu ;;
     arm64)   rust_target=aarch64-unknown-linux-gnu ;     gnu_prefix=aarch64-linux-gnu ;;
     armhf)   rust_target=armv7-unknown-linux-gnueabihf ; gnu_prefix=arm-linux-gnueabihf ;;
+    armel)   rust_target=arm-unknown-linux-gnueabi ;     gnu_prefix=arm-linux-gnueabi ;;
     riscv64) rust_target=riscv64gc-unknown-linux-gnu ;   gnu_prefix=riscv64-linux-gnu ;;
     *) echo "unsupported Debian architecture: $deb_arch" >&2 ; exit 1 ;;
 esac

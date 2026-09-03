@@ -85,7 +85,7 @@ Then edit and install `teleddns.service`.
 | Artifact | Linking | Architectures |
 |---|---|---|
 | GitHub release tarballs | static musl, portable | amd64, arm64, armhf |
-| `.deb` (apt.telephant.eu) | dynamic, built against the glibc of the suite it is published to | amd64, arm64, armhf, riscv64 — per suite |
+| `.deb` (apt.telephant.eu) | dynamic, built against the glibc of the suite it is published to | amd64, arm64, armhf, riscv64 — per suite; plus armel on Debian trixie |
 | `.rpm` (COPR) | dynamic, built natively by Fedora | x86_64, aarch64, riscv64 |
 
 `.deb` packages are built separately for each supported suite, so the package you
@@ -94,6 +94,11 @@ release will not run on an older one, which is why they are not interchangeable.
 
 There is **no armv7hf RPM**: Fedora has no 32-bit ARM build target. On 32-bit ARM
 use the `.deb` or the static binary above.
+
+For the original **Raspberry Pi 1 / Zero** (ARMv6), where Debian's `armhf`
+(ARMv7) will not run, use the `armel` `.deb` from Debian trixie. `armel` is a
+Debian-only architecture — Ubuntu has no `armel` port — so it is not built for
+the Ubuntu suites.
 
 There is **no static riscv64 binary**: the cross-compilation toolchain we use has no
 released riscv64 musl image. On riscv64 use the `.deb` or the RPM, both of which are

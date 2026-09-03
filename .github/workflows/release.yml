@@ -132,6 +132,10 @@ jobs:
           path: teleddns-${{ matrix.target }}.tar.gz
 
   # One .deb per suite per architecture, each built against its own suite's glibc.
+  #
+  # armel (ARMv5 soft-float ABI, runs on the original Raspberry Pi 1 / Zero) is
+  # Debian only: Ubuntu has never had an armel port, so it is added for trixie
+  # alone via the include block below rather than in the suite x arch product.
   build-debs:
     name: Build .deb (${{ matrix.suite }}/${{ matrix.arch }})
     needs: check-version
@@ -156,6 +160,12 @@ jobs:
             platform: linux/arm/v7
           - arch: riscv64
             platform: linux/riscv64
+          # Standalone combination: fully specified so it is not folded into any
+          # suite/arch pair above.
+          - suite: trixie
+            arch: armel
+            image: debian:trixie
+            platform: linux/arm/v5
     steps:
       - uses: actions/checkout@v4
 
