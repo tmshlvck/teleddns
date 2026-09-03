@@ -100,8 +100,8 @@ async fn nl_get_iface_map(handle: &Handle) -> Result<HashMap<u32, String>, Error
                 _ => {}
             }
         }
-        if ifname.is_some() && is_up {
-            res.insert(msg.header.index, ifname.unwrap());
+        if let (Some(ifn), true) = (ifname, is_up) {
+            res.insert(msg.header.index, ifn);
         }
     }
     Ok(res)
@@ -247,14 +247,14 @@ fn get_subnet_addr(ip: &IpAddr, prefix_len: u8) -> IpAddr {
 }
 
 async fn get_iface_addrs(handle: &Handle, conf: &Config) -> HashMap<IfaceIpAddr, IfaceIpAddrData> {
-    let iface_map = match nl_get_iface_map(&handle).await {
+    let iface_map = match nl_get_iface_map(handle).await {
         Ok(res) => res,
         Err(_) => {
             error!("Error while getting interfaces: nl_get_iface_map");
             HashMap::new()
         }
     };
-    let addr_vec = match nl_get_addrs(&handle).await {
+    let addr_vec = match nl_get_addrs(handle).await {
         Ok(res) => res,
         Err(_) => {
             error!("Error while getting IP addresses: nl_get_addrs");
@@ -269,15 +269,15 @@ async fn get_iface_addrs(handle: &Handle, conf: &Config) -> HashMap<IfaceIpAddr,
                 if match_iface_pattern(iface, &conf.interfaces) {
                     let m = match ip {
                         IpAddr::V6(ip6) => {
-                            compute_v6_metric(&ip6, iface, &iphdr.flags, conf.report_ipv6_ula)
+                            compute_v6_metric(ip6, iface, &iphdr.flags, conf.report_ipv6_ula)
                         }
                         IpAddr::V4(ip4) => {
-                            compute_v4_metric(&ip4, iface, &iphdr.flags, conf.report_ipv4_private)
+                            compute_v4_metric(ip4, iface, &iphdr.flags, conf.report_ipv4_private)
                         }
                     };
                     ifaddrs.insert(
                         IfaceIpAddr {
-                            addr: ip.clone(),
+                            addr: *ip,
                             prefix_len: iphdr.prefix_len,
                         },
                         IfaceIpAddrData {
@@ -360,7 +360,7 @@ async fn netlink_events_receiver(
                 for attr in nladdrmsg.attributes {
                     if let AddressAttribute::Address(addr) = attr {
                         let received_ifaceaddr = IfaceIpAddr {
-                            addr: addr.clone(),
+                            addr,
                             prefix_len: nladdrmsg.header.prefix_len,
                         };
                         let addr_changed = match iface_addrs_map.get(&received_ifaceaddr) {
@@ -485,18 +485,14 @@ fn write_nft_sets(filename: &str, state: &HashMap<IfaceIpAddr, IfaceIpAddrData>)
         }
     };
     let mut is_first = true;
-    for (ip, ipdata) in state.into_iter() {
+    for (ip, ipdata) in state {
         if let IpAddr::V4(ip4) = ipdata.subnet_addr {
             match dedup4.get(&ip4) {
-                Some(dedup_pfxlen) => {
-                    if *dedup_pfxlen == ip.prefix_len {
-                        debug!("Deduped {:?}/{}", &ip4, dedup_pfxlen);
-                        continue;
-                    } else {
-                        dedup4.insert(ip4, ip.prefix_len);
-                    }
+                Some(dedup_pfxlen) if *dedup_pfxlen == ip.prefix_len => {
+                    debug!("Deduped {:?}/{}", ip4, dedup_pfxlen);
+                    continue;
                 }
-                None => {
+                _ => {
                     dedup4.insert(ip4, ip.prefix_len);
                 }
             }
@@ -512,7 +508,7 @@ fn write_nft_sets(filename: &str, state: &HashMap<IfaceIpAddr, IfaceIpAddrData>)
                     }
                 };
             }
-            match write!(wrt, "{}/{}", ip4.to_string(), ip.prefix_len) {
+            match write!(wrt, "{}/{}", ip4, ip.prefix_len) {
                 Ok(()) => (),
                 Err(e) => {
                     error!("{:?}", e);
@@ -537,18 +533,14 @@ fn write_nft_sets(filename: &str, state: &HashMap<IfaceIpAddr, IfaceIpAddrData>)
         }
     };
     is_first = true;
-    for (ip, ipdata) in state.into_iter() {
+    for (ip, ipdata) in state {
         if let IpAddr::V6(ip6) = ipdata.subnet_addr {
             match dedup6.get(&ip6) {
-                Some(dedup_pfxlen) => {
-                    if *dedup_pfxlen == ip.prefix_len {
-                        debug!("Deduped {:?}/{}", &ip6, dedup_pfxlen);
-                        continue;
-                    } else {
-                        dedup6.insert(ip6, ip.prefix_len);
-                    }
+                Some(dedup_pfxlen) if *dedup_pfxlen == ip.prefix_len => {
+                    debug!("Deduped {:?}/{}", ip6, dedup_pfxlen);
+                    continue;
                 }
-                None => {
+                _ => {
                     dedup6.insert(ip6, ip.prefix_len);
                 }
             }
@@ -564,7 +556,7 @@ fn write_nft_sets(filename: &str, state: &HashMap<IfaceIpAddr, IfaceIpAddrData>)
                     }
                 };
             }
-            match write!(wrt, "{}/{}", ip6.to_string(), ip.prefix_len) {
+            match write!(wrt, "{}/{}", ip6, ip.prefix_len) {
                 Ok(()) => (),
                 Err(e) => {
                     error!("{:?}", e);
@@ -577,7 +569,6 @@ fn write_nft_sets(filename: &str, state: &HashMap<IfaceIpAddr, IfaceIpAddrData>)
         Ok(()) => (),
         Err(e) => {
             error!("{:?}", e);
-            return;
         }
     };
 }
@@ -1080,7 +1071,6 @@ impl<A: Copy + PartialEq + Into<IpAddr> + std::fmt::Display> PushState<A> {
     }
 }
 
-
 /// Sleep until `deadline`, or forever when there is nothing scheduled.
 async fn sleep_until_opt(deadline: Option<SystemTime>) {
     match deadline {
@@ -1170,10 +1160,10 @@ async fn oneshot(conf: &Config) -> bool {
 
     tokio::spawn(conn);
 
-    let iface_addrs_map = get_iface_addrs(&handle, &conf).await;
+    let iface_addrs_map = get_iface_addrs(&handle, conf).await;
     debug!("{:?}", iface_addrs_map);
 
-    apply_hooks(&iface_addrs_map, &conf).await;
+    apply_hooks(&iface_addrs_map, conf).await;
 
     let client = build_http_client(conf);
     let (best6, best4) = select_best(&iface_addrs_map, conf);
@@ -1303,7 +1293,6 @@ struct Config {
     ddns_kernel_poll_period: Duration,
     #[serde(default = "default_http_timeout", with = "humantime_serde")]
     http_timeout: Duration,
-
 }
 
 /// Startup sanity checks. Everything that would otherwise only show up as a server
@@ -1425,7 +1414,7 @@ async fn main() {
         );
     }
     builder.init();
-    info!("Read config file {} finished", &args.config);
+    info!("Read config file {} finished", args.config);
     info!("Set log level {:?}", loglevel);
 
     if let Err(e) = validate_config(&conf) {
