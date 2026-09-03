@@ -1,6 +1,6 @@
 /*
 TeleDDNS
-(C) 2015-2025 Tomas Hlavacek (tmshlvck@gmail.com)
+(C) 2015-2026 Tomas Hlavacek (tmshlvck@gmail.com)
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
