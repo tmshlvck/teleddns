@@ -17,7 +17,6 @@ netlink-packet-route = { version = "0.33" }
 netlink-packet-core = { version = "0.9" }
 netlink-proto = { default-features = false, version = "0.13" }
 tokio = { version = "1.43.1", features = ["full"] }
-async-global-executor = { version = "2.0.2" }
 rtnetlink = "0.23"
 serde = "1.0.215"
 serde_derive = "1.0.215"
@@ -28,13 +27,10 @@ serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
 clap-verbosity-flag = "3.0.0"
 env_logger = "0.11"
 reqwest = { version = "0.12.12", features = [
-    "json",
     "rustls-tls",
 ], default-features = false }
-http = "1.2.0"
 async-process = "2.3.0"
 humantime-serde = "1.1"
-serde_json = "1"
 humantime = "2"
 
 [package.metadata.deb]

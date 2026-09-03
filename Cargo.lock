@@ -74,35 +74,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-executor"
-version = "1.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c96bf972d85afc50bf5ab8fe2d54d1586b4e0b46c97c50a0c9e71e2f7bcd812a"
-dependencies = [
- "async-task",
- "concurrent-queue",
- "fastrand",
- "futures-lite",
- "pin-project-lite",
- "slab",
-]
-
-[[package]]
-name = "async-global-executor"
-version = "2.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05b1b633a2115cd122d73b955eadd9916c18c8f510ec9cd1686404c60ad1c29c"
-dependencies = [
- "async-channel",
- "async-executor",
- "async-io",
- "async-lock",
- "blocking",
- "futures-lite",
- "once_cell",
-]
-
-[[package]]
 name = "async-io"
 version = "2.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1575,13 +1546,11 @@ dependencies = [
 name = "teleddns"
 version = "0.4.1"
 dependencies = [
- "async-global-executor",
  "async-process",
  "clap",
  "clap-verbosity-flag",
  "env_logger",
  "futures",
- "http",
  "humantime",
  "humantime-serde",
  "log",
@@ -1593,7 +1562,6 @@ dependencies = [
  "rtnetlink",
  "serde",
  "serde_derive",
- "serde_json",
  "serde_yaml_ng",
  "tokio",
 ]
