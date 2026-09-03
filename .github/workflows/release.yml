@@ -28,7 +28,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -51,7 +51,7 @@ jobs:
     needs: [build-binaries, build-debs]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -97,7 +97,7 @@ jobs:
           - target: riscv64gc-unknown-linux-musl
             arch: riscv64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -144,7 +144,7 @@ jobs:
             -C "target/${{ matrix.target }}/release" teleddns
 
       - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bin-${{ matrix.arch }}
           path: teleddns-${{ matrix.target }}.tar.gz
@@ -185,7 +185,7 @@ jobs:
             image: debian:trixie
             platform: linux/arm/v5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Needed to run the built package under the target architecture below.
       - name: Set up QEMU
@@ -204,7 +204,7 @@ jobs:
             sh -c 'apt-get update -qq && apt-get install -y ./*.deb && teleddns --version'
 
       - name: Upload .deb artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: deb-${{ matrix.suite }}-${{ matrix.arch }}
           path: dist/*.deb
@@ -215,13 +215,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download binary artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: bin-*
           merge-multiple: true
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             teleddns-*.tar.gz
@@ -235,7 +235,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download .deb artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: deb-*
           merge-multiple: true
