@@ -2,7 +2,7 @@
 name = "teleddns"
 version = "0.4.1"
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.88"
 license = "GPL-3.0-or-later"
 description = "Advanced DDNS client with Netlink support for efficient address change detection"
 homepage = "https://github.com/tmshlvck/teleddns"
@@ -12,7 +12,6 @@ readme = "README.md"
 [dependencies]
 futures = "0.3.11"
 log = "0.4.8"
-thiserror = "1"
 netlink-sys = { version = "0.8" }
 netlink-packet-route = { version = "0.25" }
 netlink-packet-core = { version = "0.8" }
@@ -29,9 +28,11 @@ rtnetlink = "0.18.1"
 serde = "1.0.215"
 serde_derive = "1.0.215"
 clap = { version = "4.5.21", features = ["derive"] }
-serde_yaml = "0.9.34"
+# serde_yaml (dtolnay) is archived and unmaintained; serde_yaml_ng is the
+# maintained drop-in fork. Aliased so the `serde_yaml::` call sites stay put.
+serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
 clap-verbosity-flag = "3.0.0"
-env_logger = "0.10.0"
+env_logger = "0.11"
 reqwest = { version = "0.12.12", features = [
     "json",
     "rustls-tls",
@@ -41,12 +42,6 @@ async-process = "2.3.0"
 humantime-serde = "1.1"
 serde_json = "1"
 humantime = "2"
-
-[dev-dependencies]
-env_logger = "0.10.0"
-ipnetwork = "0.18.0"
-async-std = { version = "1.9.0", features = ["attributes"] }
-macaddr = "1.0"
 
 [package.metadata.deb]
 maintainer = "Tomas Hlavacek <tmshlvck@gmail.com>"
