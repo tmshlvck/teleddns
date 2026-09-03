@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # Cargo.lock is committed, so these are lockfile-only bumps unless a manifest
+  # range needs widening. Grouped so a week's worth of patch bumps is one PR.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"
