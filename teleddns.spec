@@ -7,7 +7,7 @@
 # COPR builds from this spec file with network access enabled.
 
 Name:           teleddns
-Version:        0.4.1
+Version:        0.4.2
 Release:        1%{?dist}
 Summary:        Advanced DDNS client with Netlink support
 
@@ -93,6 +93,18 @@ fi
 %dir %{_sysconfdir}/teleddns
 
 %changelog
+* Thu Sep 03 2026 Tomas Hlavacek <tmshlvck@gmail.com> - 0.4.2-1
+- No functional change to the client. Dependency, packaging and CI refresh.
+- Netlink stack updated (rtnetlink 0.18 -> 0.23 and the netlink-packet crates)
+  with no behaviour change, verified against a live kernel. Unused dependencies
+  dropped and the unmaintained serde_yaml replaced with serde_yaml_ng. The
+  minimum supported Rust is now 1.88.
+- Static binaries (GitHub release) are built with cargo-zigbuild instead of
+  cross: this restores the riscv64 static binary, now genuinely static, and
+  adds an armel one for the original Raspberry Pi 1 / Zero. Does not affect
+  this RPM.
+- New armel .deb for Debian trixie, for the same ARMv6 devices.
+
 * Thu Aug 13 2026 Tomas Hlavacek <tmshlvck@gmail.com> - 0.4.1-1
 - Release pipeline fixes only; no functional change to the client since 0.4.0.
 - The 0.4.0 tag published its .deb packages, but the COPR and crates.io steps
