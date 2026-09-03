@@ -67,11 +67,14 @@ sudo dnf install teleddns
 
 #### Binary Download
 
-Pre-compiled binaries for amd64, arm64 and armhf are available on [GitHub Releases](https://github.com/tmshlvck/teleddns/releases).
+Pre-compiled binaries for amd64, arm64, armhf, armel and riscv64 are available on
+[GitHub Releases](https://github.com/tmshlvck/teleddns/releases).
 
-These are **statically linked** (musl), so they run on any distribution regardless
-of its glibc version. This is the recommended option for distributions we do not
-package for, and the only pre-built option for armhf on non-Debian systems.
+These are **statically linked** (musl), built with
+[`cargo-zigbuild`](https://github.com/rust-cross/cargo-zigbuild), so they run on
+any distribution regardless of its glibc version. This is the recommended option
+for distributions we do not package for, and the only pre-built option for 32-bit
+ARM outside the Debian/Ubuntu `.deb` packages.
 
 One consequence of static linking: name resolution uses musl's own resolver, which
 reads `/etc/resolv.conf` and ignores `nsswitch.conf`. That is fine for the usual
@@ -84,7 +87,7 @@ Then edit and install `teleddns.service`.
 
 | Artifact | Linking | Architectures |
 |---|---|---|
-| GitHub release tarballs | static musl, portable | amd64, arm64, armhf |
+| GitHub release tarballs | static musl, portable | amd64, arm64, armhf, armel, riscv64 |
 | `.deb` (apt.telephant.eu) | dynamic, built against the glibc of the suite it is published to | amd64, arm64, armhf, riscv64 — per suite; plus armel on Debian trixie |
 | `.rpm` (COPR) | dynamic, built natively by Fedora | x86_64, aarch64, riscv64 |
 
@@ -92,17 +95,13 @@ Then edit and install `teleddns.service`.
 install always matches your distribution's glibc. A package built for a newer
 release will not run on an older one, which is why they are not interchangeable.
 
-There is **no armv7hf RPM**: Fedora has no 32-bit ARM build target. On 32-bit ARM
-use the `.deb` or the static binary above.
+There is **no 32-bit ARM RPM**: Fedora has no 32-bit ARM build target. On 32-bit
+ARM use the static binary above or the `.deb`.
 
-For the original **Raspberry Pi 1 / Zero** (ARMv6), where Debian's `armhf`
-(ARMv7) will not run, use the `armel` `.deb` from Debian trixie. `armel` is a
-Debian-only architecture — Ubuntu has no `armel` port — so it is not built for
-the Ubuntu suites.
-
-There is **no static riscv64 binary**: the cross-compilation toolchain we use has no
-released riscv64 musl image. On riscv64 use the `.deb` or the RPM, both of which are
-built for it, or build from source.
+For the original **Raspberry Pi 1 / Zero** (ARMv6), where the `armhf` build
+(ARMv7) will not run, use the `armel` static binary, or the `armel` `.deb` from
+Debian trixie. `armel` is a Debian-only architecture — Ubuntu has no `armel`
+port — so the `.deb` is built for trixie only.
 
 ### Installation from sources
 

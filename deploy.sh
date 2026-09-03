@@ -73,8 +73,14 @@ get_binary_target() {
         armv7l)
             echo "armv7-unknown-linux-musleabihf"
             ;;
-        # No riscv64: there is no static binary for it. riscv64 is served by the
-        # .deb and the COPR RPM, and otherwise falls back to building from source.
+        armv6l | armv5*)
+            # ARMv6/ARMv5, e.g. the original Raspberry Pi 1 / Zero: no
+            # hardware-float ABI, so the armhf build above will not run.
+            echo "arm-unknown-linux-musleabi"
+            ;;
+        riscv64)
+            echo "riscv64gc-unknown-linux-musl"
+            ;;
         *)
             echo ""
             ;;
