@@ -123,8 +123,10 @@ silently leaves the default in place.
 
 Create configuration file (modify the following example):
 ```
-sudo mkdir /etc/teleddns/
-sudo bash -c 'cat <<EOF >/etc/teleddns/teleddns.yaml
+sudo install -d /etc/teleddns
+# The file holds the DDNS password: keep it readable by root only.
+sudo install -m 600 /dev/null /etc/teleddns/teleddns.yaml
+sudo tee /etc/teleddns/teleddns.yaml >/dev/null <<'EOF'
 ---
 debug: False
 
@@ -137,8 +139,7 @@ interfaces:
 hooks:
 - nft_sets_outfile: "/etc/nftables.d/00-localnets.rules"
   shell: "nft -f /etc/nftables.conf"
-
-EOF'
+EOF
 ```
 
 Test the client:

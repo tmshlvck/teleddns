@@ -41,7 +41,7 @@ To configure teleddns:
 .RS
 .nf
 mkdir -p /etc/teleddns
-cp /usr/share/doc/teleddns/teleddns.yaml.sample /etc/teleddns/teleddns.yaml
+install -m 600 /usr/share/doc/teleddns/teleddns.yaml.sample /etc/teleddns/teleddns.yaml
 # Edit the file with your DDNS credentials
 .fi
 .RE

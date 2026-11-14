@@ -72,7 +72,7 @@ install -d %{buildroot}%{_sysconfdir}/teleddns
 %systemd_post teleddns.service
 if [ ! -f %{_sysconfdir}/teleddns/teleddns.yaml ]; then
     echo "TeleDDNS installed. To configure:"
-    echo "  cp %{_docdir}/%{name}/teleddns.yaml.sample %{_sysconfdir}/teleddns/teleddns.yaml"
+    echo "  install -m 600 %{_docdir}/%{name}/teleddns.yaml.sample %{_sysconfdir}/teleddns/teleddns.yaml"
     echo "  # Edit %{_sysconfdir}/teleddns/teleddns.yaml with your DDNS credentials"
     echo "  systemctl enable --now teleddns"
 fi

@@ -158,7 +158,7 @@ install_copr() {
 install_binary() {
     info "Downloading binary from GitHub releases..."
 
-    TELEDDNS_VERSION=$(curl -s "$SRC_GITHUB_API" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+    TELEDDNS_VERSION=$(curl -fsSL "$SRC_GITHUB_API" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
     if ! echo "$TELEDDNS_VERSION" | grep -qE "^v[0-9\.]+$"; then
         error "Failed to get latest version: $TELEDDNS_VERSION"
         return 1
@@ -174,16 +174,17 @@ install_binary() {
     SRC="$SRC_PREFIX/$TELEDDNS_VERSION/teleddns-${TARGET}.tar.gz"
     info "Downloading $SRC ..."
 
-    if ! curl -f -o /tmp/teleddns.tar.gz -L "$SRC"; then
+    TMPDIR_DL=$(mktemp -d)
+    if ! curl -f -o "$TMPDIR_DL/teleddns.tar.gz" -L "$SRC"; then
         warn "Failed to download binary for $TARGET"
-        rm -f /tmp/teleddns.tar.gz
+        rm -rf "$TMPDIR_DL"
         return 1
     fi
 
     info "Installing binary to /usr/local/bin..."
     sudo mkdir -p /usr/local/bin
-    sudo tar xf /tmp/teleddns.tar.gz -C /usr/local/bin
-    rm -f /tmp/teleddns.tar.gz
+    sudo tar xf "$TMPDIR_DL/teleddns.tar.gz" -C /usr/local/bin
+    rm -rf "$TMPDIR_DL"
 
     # Install systemd service for binary installs
     install_systemd_service "/usr/local/bin/teleddns"
@@ -278,21 +279,28 @@ create_config() {
     fi
 
     info "Creating configuration file..."
-    sudo mkdir -p /etc/teleddns/
-    sudo bash -c "cat << EOF > /etc/teleddns/teleddns.yaml
+    # YAML single-quoted strings: the only escape is '' for a literal quote. The
+    # heredoc is expanded once, by this shell, so nothing in the arguments is ever
+    # evaluated as shell code.
+    local url="${DDNSURL//\'/\'\'}"
+    local name="${DDNSNAME//\'/\'\'}"
+    # The file holds the DDNS password: create it 0600 before writing to it.
+    sudo install -d -m 755 /etc/teleddns
+    sudo install -m 600 /dev/null /etc/teleddns/teleddns.yaml
+    sudo tee /etc/teleddns/teleddns.yaml > /dev/null << EOF
 ---
-debug: False
+debug: false
 
-ddns_url: \"$DDNSURL\"
-hostname: \"$DDNSNAME\"
-enable_ipv6: True
-enable_ipv4: False
+ddns_url: '$url'
+hostname: '$name'
+enable_ipv6: true
+enable_ipv4: false
 interfaces:
 - '*'
 #hooks:
-#- nft_sets_outfile: \"/etc/nftables.d/00-localnets.rules\"
-#  shell: \"nft -f /etc/nftables.conf\"
-EOF"
+#- nft_sets_outfile: "/etc/nftables.d/00-localnets.rules"
+#  shell: "nft -f /etc/nftables.conf"
+EOF
 }
 
 # Enable and start service

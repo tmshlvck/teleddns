@@ -9,7 +9,7 @@ mkdir -p /etc/teleddns
 # Inform user about sample configuration
 if [ ! -f /etc/teleddns/teleddns.yaml ]; then
     echo "TeleDDNS installed. To configure:"
-    echo "  cp /usr/share/doc/teleddns/teleddns.yaml.sample /etc/teleddns/teleddns.yaml"
+    echo "  install -m 600 /usr/share/doc/teleddns/teleddns.yaml.sample /etc/teleddns/teleddns.yaml"
     echo "  # Edit /etc/teleddns/teleddns.yaml with your DDNS credentials"
     echo "  systemctl daemon-reload"
     echo "  systemctl enable --now teleddns"
