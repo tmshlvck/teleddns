@@ -11,7 +11,7 @@ to minimize both the DDNS convergence time and resource usage.
 ### TL;DR (Automated Install)
 
 ```
-curl -s -L https://raw.githubusercontent.com/tmshlvck/teleddns/master/deploy.sh | bash -s <URL> <domainname>
+curl -fsSL https://raw.githubusercontent.com/tmshlvck/teleddns/master/deploy.sh | bash -s <URL> <domainname>
 ```
 
 Where URL is the API URL including the username and password in `https://user:pass@host.domain.tld/ddns/update` form and domainname is the FQDN of the host (example: `testhost.d.telephant.eu`).
@@ -26,9 +26,14 @@ The deploy script automatically detects your distribution and installs using the
 | Fallback (if binary unavailable) | `cargo install` from crates.io |
 
 The script will:
-- Install teleddns using the appropriate package manager or binary
+- Install teleddns using the first method that works; a method that fails is rolled
+  back before the next one is tried
 - Create configuration in `/etc/teleddns/teleddns.yaml` (if not already present)
 - Enable and start the systemd service
+
+It runs as root (e.g. from cloud-init) or as a user with `sudo`, and is safe to run
+again: a re-run upgrades the package and leaves an existing configuration alone. A
+package install also removes an earlier binary install from `/usr/local/bin`.
 
 After installation, check status with:
 ```
@@ -46,17 +51,28 @@ sudo journalctl -u teleddns -f
 
 #### Debian/Ubuntu (APT)
 
+As root:
+
 ```bash
-curl -fsSL https://apt.telephant.eu/teleddns/pubkey.gpg | sudo gpg --dearmor -o /usr/share/keyrings/teleddns.gpg
-echo "deb [signed-by=/usr/share/keyrings/teleddns.gpg] https://apt.telephant.eu/teleddns/ $(. /etc/os-release; echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") main" | sudo tee /etc/apt/sources.list.d/teleddns.list
-sudo apt update
-sudo apt install teleddns
+. /etc/os-release
+install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://apt.telephant.eu/teleddns/pubkey.gpg -o /etc/apt/keyrings/teleddns.asc
+cat > /etc/apt/sources.list.d/teleddns.sources <<EOF
+Types: deb
+URIs: https://apt.telephant.eu/teleddns/
+Suites: ${UBUNTU_CODENAME:-$VERSION_CODENAME}
+Components: main
+Signed-By: /etc/apt/keyrings/teleddns.asc
+EOF
+apt update && apt install teleddns
 ```
 
-Supported suites are `trixie` (Debian 13), `noble` (Ubuntu 24.04 LTS) and
-`resolute` (Ubuntu 26.04 LTS). Use the suite matching your system — packages are
-built against each suite's glibc and a package from a newer suite will not run on
-an older release. On anything else, use the static binary below.
+Published suites are `trixie` (Debian 13, also Raspberry Pi OS), `noble` (Ubuntu
+24.04 LTS) and `resolute` (Ubuntu 26.04 LTS). On anything else, use the static
+binary below.
+
+The package does not start the service until `/etc/teleddns/teleddns.yaml` exists;
+an enabled service is restarted on upgrade.
 
 #### Fedora (COPR)
 
@@ -88,20 +104,19 @@ Then edit and install `debian/teleddns.service`.
 | Artifact | Linking | Architectures |
 |---|---|---|
 | GitHub release tarballs | static musl, portable | amd64, arm64, armhf, armel, riscv64 |
-| `.deb` (apt.telephant.eu) | dynamic, built against the glibc of the suite it is published to | amd64, arm64, armhf, riscv64 — per suite; plus armel on Debian trixie |
+| `.deb` (apt.telephant.eu) | dynamic, glibc ≥ 2.34 | amd64, arm64, armhf (ARMv6+), riscv64; armel on Debian trixie |
 | `.rpm` (COPR) | dynamic, built natively by Fedora | x86_64, aarch64, riscv64 |
 
-`.deb` packages are built separately for each supported suite, so the package you
-install always matches your distribution's glibc. A package built for a newer
-release will not run on an older one, which is why they are not interchangeable.
+The `.deb` binaries are cross-built with `cargo-zigbuild` against glibc 2.36 symbol
+versions, so one package per architecture serves every published suite.
 
 There is **no 32-bit ARM RPM**: Fedora has no 32-bit ARM build target. On 32-bit
 ARM use the static binary above or the `.deb`.
 
-For the original **Raspberry Pi 1 / Zero** (ARMv6), where the `armhf` build
-(ARMv7) will not run, use the `armel` static binary, or the `armel` `.deb` from
-Debian trixie. `armel` is a Debian-only architecture — Ubuntu has no `armel`
-port — so the `.deb` is built for trixie only.
+The `armhf` `.deb` is built for ARMv6 with hardware floating point, the baseline of
+Raspberry Pi OS, so it also runs on the original **Raspberry Pi 1 / Zero**. The
+`armhf` static binary is ARMv7; on a Pi 1 / Zero use the `armel` one instead (the
+deploy script does).
 
 ### Installation from sources
 
