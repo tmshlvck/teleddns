@@ -63,15 +63,27 @@ const RTMGRP_LINK: u32 = 1;
 const RTMGRP_IPV4_IFADDR: u32 = 1 << 4;
 const RTMGRP_IPV6_IFADDR: u32 = 1 << 8;
 
+/// The local address of an address message. On a point-to-point link (PPPoE, a
+/// tunnel) IFA_ADDRESS is the *peer* and IFA_LOCAL ours; otherwise they are equal
+/// or only IFA_ADDRESS is present.
+fn local_addr(msg: &AddressMessage) -> Option<IpAddr> {
+    let attr = |want_local: bool| {
+        msg.attributes.iter().find_map(|a| match a {
+            AddressAttribute::Local(ip) if want_local => Some(*ip),
+            AddressAttribute::Address(ip) if !want_local => Some(*ip),
+            _ => None,
+        })
+    };
+    attr(true).or_else(|| attr(false))
+}
+
 async fn nl_get_addrs(handle: &Handle) -> Result<Vec<(IpAddr, AddressHeader)>, Error> {
     let mut aget = handle.address().get().execute();
     let mut res = Vec::new();
     while let Some(msg) = aget.try_next().await? {
         debug!("response: {:?}", msg);
-        for attr in msg.attributes.into_iter() {
-            if let AddressAttribute::Address(addr) = attr {
-                res.push((addr, msg.header.clone()));
-            }
+        if let Some(addr) = local_addr(&msg) {
+            res.push((addr, msg.header));
         }
     }
     Ok(res)
@@ -124,7 +136,7 @@ fn match_iface_pattern(ifname: &str, pattern_list: &Vec<String>) -> bool {
     false
 }
 
-// acceptable values 0,8,16,32
+/// Preference for wired over wireless over anything else (tunnels, bridges, ...).
 fn iface_bonus(iface: &str) -> u8 {
     if iface.starts_with("en") {
         16
@@ -135,84 +147,60 @@ fn iface_bonus(iface: &str) -> u8 {
     }
 }
 
-// acceptable values 0..7
-fn flag_bonus(flags: &AddressHeaderFlags) -> u8 {
-    // Warn: i.e. OpenVPN tunnels have permanent bonus while the real interfaces
-    // may have just SLAAC address
-    let mut b = 0;
-    if flags.contains(AddressHeaderFlags::Permanent) {
-        b += 1;
-    }
-    b
-}
-
-fn compute_v6_metric(
-    ipaddr: &Ipv6Addr,
-    iface: &str,
-    flags: &AddressHeaderFlags,
-    accept_ula: bool,
-) -> u8 {
-    if ipaddr.is_unicast_link_local() || ipaddr.is_multicast() {
+/// Base score of an IPv6 address: 0 never publish, 1 last resort, 64 temporary
+/// (privacy) address, 128 stable, 129 stable EUI-64.
+fn v6_base_metric(ip: &Ipv6Addr, flags: AddressHeaderFlags, accept_ula: bool) -> u8 {
+    let unusable = ip.is_unicast_link_local()
+        || ip.is_multicast()
+        || ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.to_ipv4_mapped().is_some()
+        // documentation (2001:db8::/32, 3fff::/20) and benchmarking (2001:2::/48)
+        || matches!(ip.segments(), [0x2001, 0xdb8, ..] | [0x3fff, 0..=0x0fff, ..] | [0x2001, 0x2, 0, ..]);
+    if unusable {
         0
-    } else if matches!(ipaddr.segments(), [0, 0, 0, 0, 0, 0xffff, _, _]) {
-        // .is_ipv4_mapped
-        0
-    } else if ipaddr.is_loopback() || ipaddr.is_unspecified() {
-        0
-    } else if matches!(
-        ipaddr.segments(),
-        [0x2001, 0xdb8, ..] | [0x3fff, 0..=0x0fff, ..]
-    ) {
-        // .is_documentation
-        0
-    } else if (ipaddr.segments()[0] == 0x2001)
-        && (ipaddr.segments()[1] == 0x2)
-        && (ipaddr.segments()[2] == 0)
-    {
-        // .is_benchmarking
-        0
-    } else if ipaddr.is_unique_local() {
-        if accept_ula {
-            1 + iface_bonus(iface) + flag_bonus(flags)
-        } else {
-            0
-        }
+    } else if ip.is_unique_local() {
+        u8::from(accept_ula)
     } else if flags.contains(AddressHeaderFlags::Deprecated) {
-        1 + iface_bonus(iface) + flag_bonus(flags)
-    } else if (ipaddr.octets()[11] == 0xff) && (ipaddr.octets()[12] == 0xfe) {
-        // EUI-64
-        129 + iface_bonus(iface) + flag_bonus(flags)
+        1
+    } else if flags.contains(AddressHeaderFlags::Secondary) {
+        // IFA_F_TEMPORARY: rotates daily, publishing it would defeat its purpose.
+        64
+    } else if ip.octets()[11..13] == [0xff, 0xfe] {
+        129
     } else {
-        128 + iface_bonus(iface) + flag_bonus(flags)
+        128
     }
 }
 
-fn compute_v4_metric(
-    ipaddr: &Ipv4Addr,
-    iface: &str,
-    flags: &AddressHeaderFlags,
-    accept_private: bool,
-) -> u8 {
-    if ipaddr.is_loopback() || ipaddr.is_unspecified() {
+/// Base score of an IPv4 address: 0 never publish, 1 last resort, 128 public.
+fn v4_base_metric(ip: &Ipv4Addr, accept_private: bool) -> u8 {
+    let unusable = ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_link_local()
+        // documentation: TEST-NET-1, -2, -3
+        || matches!(ip.octets(), [192, 0, 2, _] | [198, 51, 100, _] | [203, 0, 113, _]);
+    if unusable {
         0
-    } else if matches!(
-        ipaddr.octets(),
-        [192, 0, 2, _] | [198, 51, 100, _] | [203, 0, 113, _]
-    ) {
-        // [IANA TEST-NET-1, IANA documentation, IANA TEST-NET-3]
-        // .is_documentation()
-        0
-    } else if ipaddr.is_link_local() {
-        0
-    } else if ipaddr.is_private() {
-        if accept_private {
-            1 + iface_bonus(iface) + flag_bonus(flags)
-        } else {
-            0
-        }
+    } else if ip.is_private() {
+        u8::from(accept_private)
     } else {
-        128 + iface_bonus(iface) + flag_bonus(flags)
+        128
     }
+}
+
+/// How much we would like to publish this address; 0 means never. The base score
+/// dominates, the interface and a permanent (static) address only break near-ties.
+/// Note that e.g. a static OpenVPN tunnel address beats a SLAAC one on equal base.
+fn compute_metric(ip: &IpAddr, iface: &str, flags: AddressHeaderFlags, conf: &Config) -> u8 {
+    let base = match ip {
+        IpAddr::V6(ip6) => v6_base_metric(ip6, flags, conf.report_ipv6_ula),
+        IpAddr::V4(ip4) => v4_base_metric(ip4, conf.report_ipv4_private),
+    };
+    if base == 0 || flags.contains(AddressHeaderFlags::Dadfailed) {
+        return 0;
+    }
+    base + iface_bonus(iface) + u8::from(flags.contains(AddressHeaderFlags::Permanent))
 }
 
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
@@ -261,14 +249,7 @@ async fn get_iface_addrs(handle: &Handle, conf: &Config) -> Result<AddrMap, Erro
         match iface_map.get(&iphdr.index) {
             Some(iface) => {
                 if match_iface_pattern(iface, &conf.interfaces) {
-                    let m = match ip {
-                        IpAddr::V6(ip6) => {
-                            compute_v6_metric(ip6, iface, &iphdr.flags, conf.report_ipv6_ula)
-                        }
-                        IpAddr::V4(ip4) => {
-                            compute_v4_metric(ip4, iface, &iphdr.flags, conf.report_ipv4_private)
-                        }
-                    };
+                    let m = compute_metric(ip, iface, iphdr.flags, conf);
                     ifaddrs.insert(
                         IfaceIpAddr {
                             addr: *ip,
@@ -282,12 +263,12 @@ async fn get_iface_addrs(handle: &Handle, conf: &Config) -> Result<AddrMap, Erro
                     );
                 } else {
                     info!(
-                        "Interace not matched filter, ignoring {:?} hdr {:?} iface {}",
+                        "Interface not matched by the filter, ignoring {:?} hdr {:?} iface {}",
                         ip, iphdr, iface
                     );
                 }
             }
-            None => warn!("Unknown inface for {:?} hdr {:?}", ip, iphdr),
+            None => warn!("Unknown interface for {:?} hdr {:?}", ip, iphdr),
         }
     }
     Ok(ifaddrs)
@@ -378,14 +359,14 @@ async fn netlink_events_receiver(tx: Sender<AddrMap>, conf: Config) {
         // A NewAddress for an address we already have with unchanged flags is just a
         // lifetime refresh (every IPv6 RA sends one): skip the re-dump.
         if let InnerMessage(NewAddress(msg)) = &nlmsg.payload {
-            let known = msg.attributes.iter().all(|attr| match attr {
-                AddressAttribute::Address(addr) => addrs
-                    .get(&IfaceIpAddr {
-                        addr: *addr,
-                        prefix_len: msg.header.prefix_len,
-                    })
-                    .is_some_and(|existing| existing.flags == msg.header.flags),
-                _ => true,
+            let known = local_addr(msg).is_none_or(|addr| {
+                let key = IfaceIpAddr {
+                    addr,
+                    prefix_len: msg.header.prefix_len,
+                };
+                addrs
+                    .get(&key)
+                    .is_some_and(|existing| existing.flags == msg.header.flags)
             });
             if known {
                 debug!("NewAddress notify for an already known address -> ignore");
@@ -409,27 +390,24 @@ async fn next_poll_tick(tick: &mut Option<tokio::time::Interval>) {
     }
 }
 
+/// The best address of each enabled family: highest metric, ties to the lowest
+/// address so the choice does not depend on HashMap order.
 fn select_best(iface_addrs_map: &AddrMap, conf: &Config) -> (Option<Ipv6Addr>, Option<Ipv4Addr>) {
-    let mut best6 = None;
-    let mut best4 = None;
-    let mut metric6 = 0;
-    let mut metric4 = 0;
-    for (ip, ipdata) in iface_addrs_map.iter() {
-        match ip.addr {
-            IpAddr::V6(ip6) => {
-                if conf.enable_ipv6 && ipdata.metric > metric6 {
-                    best6 = Some(ip6);
-                    metric6 = ipdata.metric;
-                }
-            }
-            IpAddr::V4(ip4) => {
-                if conf.enable_ipv4 && ipdata.metric > metric4 {
-                    best4 = Some(ip4);
-                    metric4 = ipdata.metric;
-                }
-            }
-        }
-    }
+    let best = |enabled: bool, v4: bool| {
+        iface_addrs_map
+            .iter()
+            .filter(|(ip, data)| enabled && data.metric > 0 && ip.addr.is_ipv4() == v4)
+            .max_by_key(|(ip, data)| (data.metric, std::cmp::Reverse(ip.addr)))
+            .map(|(ip, _)| ip.addr)
+    };
+    let best6 = match best(conf.enable_ipv6, false) {
+        Some(IpAddr::V6(ip6)) => Some(ip6),
+        _ => None,
+    };
+    let best4 = match best(conf.enable_ipv4, true) {
+        Some(IpAddr::V4(ip4)) => Some(ip4),
+        _ => None,
+    };
     (best6, best4)
 }
 
@@ -1560,6 +1538,71 @@ mod tests {
                 (key, data)
             })
             .collect()
+    }
+
+    #[test]
+    fn local_addr_prefers_ifa_local_on_point_to_point() {
+        let mut msg = AddressMessage::default();
+        msg.attributes
+            .push(AddressAttribute::Address("10.0.0.1".parse().unwrap()));
+        assert_eq!(local_addr(&msg), Some("10.0.0.1".parse().unwrap()));
+        // PPPoE: IFA_ADDRESS is the peer, IFA_LOCAL is ours.
+        msg.attributes
+            .push(AddressAttribute::Local("198.18.7.7".parse().unwrap()));
+        assert_eq!(local_addr(&msg), Some("198.18.7.7".parse().unwrap()));
+    }
+
+    #[test]
+    fn metric_ranks_stable_over_temporary_over_last_resort() {
+        let conf = test_config();
+        let m = |a: &str, iface, flags| compute_metric(&a.parse().unwrap(), iface, flags, &conf);
+        let none = AddressHeaderFlags::empty();
+        let stable = m("2a00:1::1", "eth0", none);
+        let eui64 = m("2a00:1::211:22ff:fe33:4455", "eth0", none);
+        let temporary = m("2a00:1::2", "eth0", AddressHeaderFlags::Secondary);
+        let deprecated = m("2a00:1::3", "eth0", AddressHeaderFlags::Deprecated);
+        assert!(eui64 > stable && stable > temporary && temporary > deprecated && deprecated > 0);
+        assert!(m("2a00:1::1", "enp1s0", none) > m("2a00:1::1", "wlp2s0", none));
+        assert_eq!(m("2a00:1::1", "eth0", AddressHeaderFlags::Dadfailed), 0);
+        for unusable in [
+            "fe80::1",
+            "::1",
+            "::ffff:1.2.3.4",
+            "2001:db8::1",
+            "2001:2::1",
+            "fd00::1",
+        ] {
+            assert_eq!(m(unusable, "eth0", none), 0, "{unusable}");
+        }
+        assert_eq!(m("9.9.9.9", "eth0", none), 128);
+        for unusable in ["127.0.0.1", "169.254.1.1", "192.0.2.1", "10.0.0.1"] {
+            assert_eq!(m(unusable, "eth0", none), 0, "{unusable}");
+        }
+    }
+
+    #[test]
+    fn select_best_breaks_ties_deterministically() {
+        let mut state = addr_map(&[
+            "2a00:1::9/64",
+            "2a00:1::5/64",
+            "198.18.0.9/24",
+            "198.18.0.5/24",
+        ]);
+        for data in state.values_mut() {
+            data.metric = 128;
+        }
+        let mut conf = test_config();
+        conf.enable_ipv4 = true;
+        conf.enable_ipv6 = true;
+        assert_eq!(
+            select_best(&state, &conf),
+            (
+                Some("2a00:1::5".parse().unwrap()),
+                Some("198.18.0.5".parse().unwrap())
+            )
+        );
+        conf.enable_ipv4 = false;
+        assert_eq!(select_best(&state, &conf).1, None);
     }
 
     #[test]
