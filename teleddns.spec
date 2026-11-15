@@ -7,7 +7,7 @@
 # COPR builds from this spec file with network access enabled.
 
 Name:           teleddns
-Version:        0.4.2
+Version:        0.4.3
 Release:        1%{?dist}
 Summary:        Advanced DDNS client with Netlink support
 
@@ -93,6 +93,16 @@ fi
 %dir %{_sysconfdir}/teleddns
 
 %changelog
+* Sun Nov 15 2026 Tomas Hlavacek <tmshlvck@gmail.com> - 0.4.3-1
+- Daemon: a failed netlink dump no longer publishes an empty address set; both
+  tasks are supervised and an in-flight update finishes on shutdown.
+- Address selection: use the local address on point-to-point links, demote
+  RFC 4941 temporary addresses and addresses that failed DAD.
+- Hooks: run with a 60s timeout, failures are logged; nft sets are written
+  atomically and never empty.
+- Update pacing uses the monotonic clock.
+- Warn about a world-readable config and about credentials over plain http.
+- The unit does not start until /etc/teleddns/teleddns.yaml exists.
 * Thu Sep 03 2026 Tomas Hlavacek <tmshlvck@gmail.com> - 0.4.2-1
 - No functional change to the client. Dependency, packaging and CI refresh.
 - Netlink stack updated (rtnetlink 0.18 -> 0.23 and the netlink-packet crates)
