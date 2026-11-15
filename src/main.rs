@@ -28,10 +28,8 @@ use netlink_packet_route::RouteNetlinkMessage::{self, *};
 use netlink_sys::{AsyncSocket, SocketAddr};
 use rtnetlink::{new_connection, Error, Handle};
 use serde_derive::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fs::File;
-use std::io::prelude::*;
-use std::io::LineWriter;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::SystemTime;
 use tokio::process::Command;
@@ -231,22 +229,23 @@ impl std::fmt::Display for IfaceIpAddr {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct IfaceIpAddrData {
     iface: String,
-    subnet_addr: IpAddr,
     metric: u8,
     flags: AddressHeaderFlags,
 }
 
 type AddrMap = HashMap<IfaceIpAddr, IfaceIpAddrData>;
 
+/// The network address of `ip`/`prefix_len`. Out-of-range prefixes are clamped.
 fn get_subnet_addr(ip: &IpAddr, prefix_len: u8) -> IpAddr {
-    match ip {
+    let host_bits = |width: u32| width.saturating_sub(prefix_len.into());
+    match *ip {
         IpAddr::V6(ip6) => {
-            let netmask: u128 = (!0) << (128 - prefix_len);
-            IpAddr::V6(ip6 & Ipv6Addr::from(netmask))
+            let mask = u128::MAX.checked_shl(host_bits(128)).unwrap_or(0);
+            IpAddr::V6(ip6 & Ipv6Addr::from(mask))
         }
         IpAddr::V4(ip4) => {
-            let netmask: u32 = (!0) << (32 - prefix_len);
-            IpAddr::V4(ip4 & Ipv4Addr::from(netmask))
+            let mask = u32::MAX.checked_shl(host_bits(32)).unwrap_or(0);
+            IpAddr::V4(ip4 & Ipv4Addr::from(mask))
         }
     }
 }
@@ -277,7 +276,6 @@ async fn get_iface_addrs(handle: &Handle, conf: &Config) -> Result<AddrMap, Erro
                         },
                         IfaceIpAddrData {
                             iface: iface.to_string(),
-                            subnet_addr: get_subnet_addr(ip, iphdr.prefix_len),
                             metric: m,
                             flags: iphdr.flags,
                         },
@@ -435,113 +433,42 @@ fn select_best(iface_addrs_map: &AddrMap, conf: &Config) -> (Option<Ipv6Addr>, O
     (best6, best4)
 }
 
+/// nft `define`s of the local subnets, one per family, sorted and deduplicated. nft
+/// rejects an empty set, so a family without a subnet gets a placeholder that never
+/// matches a valid source address (the broadcast address, the RFC 6666 discard prefix).
+fn nft_sets(state: &AddrMap) -> String {
+    let subnets: BTreeSet<(IpAddr, u8)> = state
+        .keys()
+        .map(|ip| (get_subnet_addr(&ip.addr, ip.prefix_len), ip.prefix_len))
+        .collect();
+    let mut out = String::new();
+    for (name, v4, placeholder) in [
+        ("LOCAL_NET4", true, "255.255.255.255/32"),
+        ("LOCAL_NET6", false, "100::/64"),
+    ] {
+        let mut items: Vec<String> = subnets
+            .iter()
+            .filter(|(addr, _)| addr.is_ipv4() == v4)
+            .map(|(addr, len)| format!("{addr}/{len}"))
+            .collect();
+        if items.is_empty() {
+            items.push(placeholder.to_string());
+        }
+        out += &format!("define {name}={{\n{}\n}}\n", items.join(",\n"));
+    }
+    out
+}
+
+/// Write the nft sets via a temporary file and a rename, so nft never reads a
+/// half-written file.
 fn write_nft_sets(filename: &str, state: &AddrMap) {
-    info!("Writing NFT sets to file {} .", filename);
-    let file = match File::create(filename) {
-        Ok(f) => f,
-        Err(e) => {
-            error!("Failed to write NFT sets: {:?}", e);
-            return;
-        }
-    };
-    let mut wrt = LineWriter::new(file);
-    let mut dedup4: HashMap<Ipv4Addr, u8> = HashMap::new();
-    let mut dedup6: HashMap<Ipv6Addr, u8> = HashMap::new();
-
-    match wrt.write_all(b"define LOCAL_NET4={\n") {
-        Ok(()) => (),
-        Err(e) => {
-            error!("{:?}", e);
-            return;
-        }
-    };
-    let mut is_first = true;
-    for (ip, ipdata) in state {
-        if let IpAddr::V4(ip4) = ipdata.subnet_addr {
-            match dedup4.get(&ip4) {
-                Some(dedup_pfxlen) if *dedup_pfxlen == ip.prefix_len => {
-                    debug!("Deduped {:?}/{}", ip4, dedup_pfxlen);
-                    continue;
-                }
-                _ => {
-                    dedup4.insert(ip4, ip.prefix_len);
-                }
-            }
-
-            if is_first {
-                is_first = false;
-            } else {
-                match wrt.write_all(b",\n") {
-                    Ok(()) => (),
-                    Err(e) => {
-                        error!("{:?}", e);
-                        return;
-                    }
-                };
-            }
-            match write!(wrt, "{}/{}", ip4, ip.prefix_len) {
-                Ok(()) => (),
-                Err(e) => {
-                    error!("{:?}", e);
-                    return;
-                }
-            };
-        }
+    info!("Writing NFT sets to file {}", filename);
+    let tmp = format!("{filename}.tmp");
+    if let Err(e) =
+        std::fs::write(&tmp, nft_sets(state)).and_then(|()| std::fs::rename(&tmp, filename))
+    {
+        error!("Failed to write NFT sets to {}: {}", filename, e);
     }
-    match wrt.write_all(b"\n}\n") {
-        Ok(()) => (),
-        Err(e) => {
-            error!("{:?}", e);
-            return;
-        }
-    };
-
-    match wrt.write_all(b"define LOCAL_NET6={\n") {
-        Ok(()) => (),
-        Err(e) => {
-            error!("{:?}", e);
-            return;
-        }
-    };
-    is_first = true;
-    for (ip, ipdata) in state {
-        if let IpAddr::V6(ip6) = ipdata.subnet_addr {
-            match dedup6.get(&ip6) {
-                Some(dedup_pfxlen) if *dedup_pfxlen == ip.prefix_len => {
-                    debug!("Deduped {:?}/{}", ip6, dedup_pfxlen);
-                    continue;
-                }
-                _ => {
-                    dedup6.insert(ip6, ip.prefix_len);
-                }
-            }
-
-            if is_first {
-                is_first = false;
-            } else {
-                match wrt.write_all(b",\n") {
-                    Ok(()) => (),
-                    Err(e) => {
-                        error!("{:?}", e);
-                        return;
-                    }
-                };
-            }
-            match write!(wrt, "{}/{}", ip6, ip.prefix_len) {
-                Ok(()) => (),
-                Err(e) => {
-                    error!("{:?}", e);
-                    return;
-                }
-            };
-        }
-    }
-    match wrt.write_all(b"\n}\n") {
-        Ok(()) => (),
-        Err(e) => {
-            error!("{:?}", e);
-        }
-    };
 }
 
 /// Run a shell hook. Failures are logged and otherwise ignored.
@@ -1614,6 +1541,53 @@ mod tests {
         assert!(extra
             .as_str()
             .starts_with("https://ddns.example.com/update?system=dyndns&myip=192.0.2.1&hostname="));
+    }
+
+    fn addr_map(addrs: &[&str]) -> AddrMap {
+        addrs
+            .iter()
+            .map(|a| {
+                let (addr, len) = a.split_once('/').unwrap();
+                let key = IfaceIpAddr {
+                    addr: addr.parse().unwrap(),
+                    prefix_len: len.parse().unwrap(),
+                };
+                let data = IfaceIpAddrData {
+                    iface: "eth0".to_string(),
+                    metric: 0,
+                    flags: AddressHeaderFlags::empty(),
+                };
+                (key, data)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn subnet_addr_handles_every_prefix_length() {
+        let sub = |a: &str, len| get_subnet_addr(&a.parse().unwrap(), len).to_string();
+        assert_eq!(sub("192.168.1.7", 24), "192.168.1.0");
+        assert_eq!(sub("192.168.1.7", 32), "192.168.1.7");
+        assert_eq!(sub("192.168.1.7", 0), "0.0.0.0");
+        assert_eq!(sub("192.168.1.7", 99), "192.168.1.7");
+        assert_eq!(sub("2001:db8:1:2::5", 64), "2001:db8:1:2::");
+        assert_eq!(sub("2001:db8:1:2::5", 0), "::");
+        assert_eq!(sub("2001:db8:1:2::5", 128), "2001:db8:1:2::5");
+    }
+
+    #[test]
+    fn nft_sets_are_sorted_deduplicated_and_never_empty() {
+        let state = addr_map(&["10.0.0.9/8", "10.0.0.0/24", "10.0.0.5/8", "192.168.1.2/24"]);
+        assert_eq!(
+            nft_sets(&state),
+            "define LOCAL_NET4={\n10.0.0.0/8,\n10.0.0.0/24,\n192.168.1.0/24\n}\n\
+             define LOCAL_NET6={\n100::/64\n}\n"
+        );
+        let state = addr_map(&["2001:db8::1/64", "2001:db8::2/64", "fe80::1/64"]);
+        assert_eq!(
+            nft_sets(&state),
+            "define LOCAL_NET4={\n255.255.255.255/32\n}\n\
+             define LOCAL_NET6={\n2001:db8::/64,\nfe80::/64\n}\n"
+        );
     }
 
     #[test]
