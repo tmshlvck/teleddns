@@ -16,16 +16,15 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-use async_process::Command;
 use clap::Parser;
 use futures::stream::{StreamExt, TryStreamExt};
 use humantime::format_duration;
 use log::{debug, error, info, warn};
-use netlink_packet_core::NetlinkPayload::InnerMessage;
+use netlink_packet_core::{NetlinkMessage, NetlinkPayload::InnerMessage};
 use netlink_packet_route::address::AddressHeader;
 use netlink_packet_route::address::*;
 use netlink_packet_route::link::*;
-use netlink_packet_route::RouteNetlinkMessage::*;
+use netlink_packet_route::RouteNetlinkMessage::{self, *};
 use netlink_sys::{AsyncSocket, SocketAddr};
 use rtnetlink::{new_connection, Error, Handle};
 use serde_derive::{Deserialize, Serialize};
@@ -36,6 +35,7 @@ use std::io::LineWriter;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::panic;
 use std::time::SystemTime;
+use tokio::process::Command;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::task::JoinSet;
@@ -56,11 +56,13 @@ const RATE_WINDOW: Duration = Duration::from_secs(3600);
 /// configuration that cannot possibly stay inside the server's limit.
 const SERVER_UPDATES_PER_HOUR: u32 = 60;
 
-const RTNLGRP_LINK: u32 = 1;
-const RTNLGRP_IPV4_IFADDR: u32 = 1 << 4;
-const RTNLGRP_IPV6_IFADDR: u32 = 1 << 8;
-//const RTNLGRP_IPV4_NETCONF: u32 = 1 << 23;
-//const RTNLGRP_IPV6_NETCONF: u32 = 1 << 24;
+/// A hook runs inside the update worker; one that hangs must not stop DDNS updates.
+const HOOK_TIMEOUT: Duration = Duration::from_secs(60);
+
+// Netlink multicast group bitmasks (RTMGRP_* in <linux/rtnetlink.h>).
+const RTMGRP_LINK: u32 = 1;
+const RTMGRP_IPV4_IFADDR: u32 = 1 << 4;
+const RTMGRP_IPV6_IFADDR: u32 = 1 << 8;
 
 async fn nl_get_addrs(handle: &Handle) -> Result<Vec<(IpAddr, AddressHeader)>, Error> {
     let mut aget = handle.address().get().execute();
@@ -221,7 +223,7 @@ struct IfaceIpAddr {
 }
 impl std::fmt::Display for IfaceIpAddr {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}/{})", self.addr, self.prefix_len)
+        write!(f, "{}/{}", self.addr, self.prefix_len)
     }
 }
 
@@ -232,6 +234,8 @@ struct IfaceIpAddrData {
     metric: u8,
     flags: AddressHeaderFlags,
 }
+
+type AddrMap = HashMap<IfaceIpAddr, IfaceIpAddrData>;
 
 fn get_subnet_addr(ip: &IpAddr, prefix_len: u8) -> IpAddr {
     match ip {
@@ -246,21 +250,11 @@ fn get_subnet_addr(ip: &IpAddr, prefix_len: u8) -> IpAddr {
     }
 }
 
-async fn get_iface_addrs(handle: &Handle, conf: &Config) -> HashMap<IfaceIpAddr, IfaceIpAddrData> {
-    let iface_map = match nl_get_iface_map(handle).await {
-        Ok(res) => res,
-        Err(_) => {
-            error!("Error while getting interfaces: nl_get_iface_map");
-            HashMap::new()
-        }
-    };
-    let addr_vec = match nl_get_addrs(handle).await {
-        Ok(res) => res,
-        Err(_) => {
-            error!("Error while getting IP addresses: nl_get_addrs");
-            Vec::new()
-        }
-    };
+/// Dump the current addresses from the kernel. A failed dump is an error, never an
+/// empty set: publishing "no addresses" would make the hooks write empty nft sets.
+async fn get_iface_addrs(handle: &Handle, conf: &Config) -> Result<AddrMap, Error> {
+    let iface_map = nl_get_iface_map(handle).await?;
+    let addr_vec = nl_get_addrs(handle).await?;
 
     let mut ifaddrs = HashMap::new();
     for (ip, iphdr) in addr_vec.iter() {
@@ -297,30 +291,55 @@ async fn get_iface_addrs(handle: &Handle, conf: &Config) -> HashMap<IfaceIpAddr,
             None => warn!("Unknown inface for {:?} hdr {:?}", ip, iphdr),
         }
     }
-    ifaddrs
+    Ok(ifaddrs)
 }
 
-async fn netlink_events_receiver(
-    tx: Sender<HashMap<IfaceIpAddr, IfaceIpAddrData>>,
-    conf: Config,
-) -> () {
-    let (mut conn, handle, mut messages) =
+/// Open a netlink connection, subscribed to the given multicast groups (0 for none).
+fn nl_connect(
+    groups: u32,
+) -> (
+    impl std::future::Future<Output = ()>,
+    Handle,
+    impl futures::Stream<Item = (NetlinkMessage<RouteNetlinkMessage>, SocketAddr)>,
+) {
+    let (mut conn, handle, messages) =
         new_connection().expect("Failed to make netlink connection. Check privileges.");
-
-    let groups = RTNLGRP_LINK | RTNLGRP_IPV4_IFADDR | RTNLGRP_IPV6_IFADDR;
-
-    let addr = SocketAddr::new(0, groups);
     conn.socket_mut()
         .socket_mut()
-        .bind(&addr)
+        .bind(&SocketAddr::new(0, groups))
         .expect("Failed to bind to netlink socket.");
+    (conn, handle, messages)
+}
 
+async fn netlink_events_receiver(tx: Sender<AddrMap>, conf: Config) {
+    let (conn, handle, mut messages) =
+        nl_connect(RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR);
     tokio::spawn(conn);
 
-    let mut iface_addrs_map = get_iface_addrs(&handle, &conf).await;
+    // Re-dump the kernel state and hand it to the worker. False once the worker is
+    // gone. A failed dump keeps the previous state; the next event retries.
+    let mut addrs = AddrMap::new();
+    let refresh = async |addrs: &mut AddrMap| -> bool {
+        match get_iface_addrs(&handle, &conf).await {
+            Ok(new) => *addrs = new,
+            Err(e) => {
+                error!("Failed to read addresses from the kernel: {}", e);
+                return true;
+            }
+        }
+        debug!("{:?}", addrs);
+        if let Err(e) = tx.send(addrs.clone()).await {
+            error!(
+                "Update worker is gone, stopping the netlink receiver: {}",
+                e
+            );
+            return false;
+        }
+        true
+    };
+
     info!("Trigger the first update");
-    debug!("{:?}", iface_addrs_map);
-    if !publish_addrs(&tx, &iface_addrs_map).await {
+    if !refresh(&mut addrs).await {
         return;
     }
 
@@ -338,73 +357,45 @@ async fn netlink_events_receiver(
         ))
     };
 
-    'events: loop {
+    loop {
         let nlmsg = tokio::select! {
             msg = messages.next() => match msg {
                 Some((nlmsg, _)) => nlmsg,
-                None => break 'events,
+                None => {
+                    error!("Netlink event stream ended");
+                    return;
+                }
             },
             _ = next_poll_tick(&mut poll_tick) => {
                 debug!("Periodic kernel address re-dump");
-                iface_addrs_map = get_iface_addrs(&handle, &conf).await;
-                if !publish_addrs(&tx, &iface_addrs_map).await {
-                    break 'events;
+                if !refresh(&mut addrs).await {
+                    return;
                 }
-                continue 'events;
+                continue;
             }
         };
 
         debug!("netlink recv: {:?}", nlmsg.payload);
-        match nlmsg.payload {
-            InnerMessage(NewAddress(nladdrmsg)) => {
-                for attr in nladdrmsg.attributes {
-                    if let AddressAttribute::Address(addr) = attr {
-                        let received_ifaceaddr = IfaceIpAddr {
-                            addr,
-                            prefix_len: nladdrmsg.header.prefix_len,
-                        };
-                        let addr_changed = match iface_addrs_map.get(&received_ifaceaddr) {
-                            Some(existing) => {
-                                if existing.flags != nladdrmsg.header.flags {
-                                    debug!(
-                                        "NewAddress notify for known addr with changed flags: {} {:?} -> {:?} -> trigger update",
-                                        received_ifaceaddr, existing.flags, nladdrmsg.header.flags
-                                    );
-                                    true
-                                } else {
-                                    debug!(
-                                        "NewAddress notify for already known addr: {} -> ignore",
-                                        received_ifaceaddr
-                                    );
-                                    false
-                                }
-                            }
-                            None => {
-                                debug!(
-                                    "NewAddress notify for unknown addr: {} -> trigger update",
-                                    received_ifaceaddr
-                                );
-                                true
-                            }
-                        };
-                        if addr_changed {
-                            iface_addrs_map = get_iface_addrs(&handle, &conf).await;
-                            debug!("{:?}", iface_addrs_map);
-                            if !publish_addrs(&tx, &iface_addrs_map).await {
-                                break 'events;
-                            }
-                        }
-                    }
-                }
+        // A NewAddress for an address we already have with unchanged flags is just a
+        // lifetime refresh (every IPv6 RA sends one): skip the re-dump.
+        if let InnerMessage(NewAddress(msg)) = &nlmsg.payload {
+            let known = msg.attributes.iter().all(|attr| match attr {
+                AddressAttribute::Address(addr) => addrs
+                    .get(&IfaceIpAddr {
+                        addr: *addr,
+                        prefix_len: msg.header.prefix_len,
+                    })
+                    .is_some_and(|existing| existing.flags == msg.header.flags),
+                _ => true,
+            });
+            if known {
+                debug!("NewAddress notify for an already known address -> ignore");
+                continue;
             }
-            _ => {
-                debug!("Other type notify -> trigger update");
-                iface_addrs_map = get_iface_addrs(&handle, &conf).await;
-                debug!("{:?}", iface_addrs_map);
-                if !publish_addrs(&tx, &iface_addrs_map).await {
-                    break 'events;
-                }
-            }
+        }
+        debug!("Address or link change -> re-dump");
+        if !refresh(&mut addrs).await {
+            return;
         }
     }
 }
@@ -419,28 +410,7 @@ async fn next_poll_tick(tick: &mut Option<tokio::time::Interval>) {
     }
 }
 
-/// Hand the current address set to the update worker. Returns false when the worker
-/// is gone, which is the receiver's cue to stop as well.
-async fn publish_addrs(
-    tx: &Sender<HashMap<IfaceIpAddr, IfaceIpAddrData>>,
-    addrs: &HashMap<IfaceIpAddr, IfaceIpAddrData>,
-) -> bool {
-    match tx.send(addrs.clone()).await {
-        Ok(()) => true,
-        Err(e) => {
-            error!(
-                "Update worker is gone, stopping the netlink receiver: {}",
-                e
-            );
-            false
-        }
-    }
-}
-
-fn select_best(
-    iface_addrs_map: &HashMap<IfaceIpAddr, IfaceIpAddrData>,
-    conf: &Config,
-) -> (Option<Ipv6Addr>, Option<Ipv4Addr>) {
+fn select_best(iface_addrs_map: &AddrMap, conf: &Config) -> (Option<Ipv6Addr>, Option<Ipv4Addr>) {
     let mut best6 = None;
     let mut best4 = None;
     let mut metric6 = 0;
@@ -464,7 +434,7 @@ fn select_best(
     (best6, best4)
 }
 
-fn write_nft_sets(filename: &str, state: &HashMap<IfaceIpAddr, IfaceIpAddrData>) {
+fn write_nft_sets(filename: &str, state: &AddrMap) {
     info!("Writing NFT sets to file {} .", filename);
     let file = match File::create(filename) {
         Ok(f) => f,
@@ -573,22 +543,41 @@ fn write_nft_sets(filename: &str, state: &HashMap<IfaceIpAddr, IfaceIpAddrData>)
     };
 }
 
+/// Run a shell hook. Failures are logged and otherwise ignored.
 async fn shell(cmd: &str) {
     info!("Running shell command: {}", cmd);
-    match Command::new("sh").arg("-c").arg(cmd).output().await {
-        Ok(output) => {
-            info!("shell {} executed successfully: {:?}", cmd, output);
+    let child = Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .kill_on_drop(true)
+        .output();
+    match tokio::time::timeout(HOOK_TIMEOUT, child).await {
+        Ok(Ok(out)) => {
+            let (stdout, stderr) = (
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr),
+            );
+            if out.status.success() {
+                info!(
+                    "shell {} succeeded; stdout: {:?} stderr: {:?}",
+                    cmd, stdout, stderr
+                );
+            } else {
+                warn!(
+                    "shell {} failed: {}; stdout: {:?} stderr: {:?}",
+                    cmd, out.status, stdout, stderr
+                );
+            }
         }
-        Err(err) => {
-            warn!("shell {} failed: {}", cmd, err);
-        }
+        Ok(Err(e)) => warn!("shell {} could not be started: {}", cmd, e),
+        Err(_) => warn!("shell {} killed after {}", cmd, fmt_dur(HOOK_TIMEOUT)),
     }
 }
 
-async fn apply_hooks(new_state: &HashMap<IfaceIpAddr, IfaceIpAddrData>, conf: &Config) {
+async fn apply_hooks(new_state: &AddrMap, conf: &Config) {
     if let Some(hooks) = conf.hooks.as_ref() {
         for hook in hooks.iter() {
-            info!("Woking on hook {:?}", hook);
+            info!("Working on hook {:?}", hook);
             if let Some(outfile) = hook.nft_sets_outfile.as_ref() {
                 write_nft_sets(outfile, new_state);
             }
@@ -599,17 +588,13 @@ async fn apply_hooks(new_state: &HashMap<IfaceIpAddr, IfaceIpAddrData>, conf: &C
     }
 }
 
+/// The URL with its password masked, for logging.
 fn sanitize_url(url: &reqwest::Url) -> String {
-    let u = url.to_string();
-    let ps = u.match_indices(':').nth(1);
-    let pe = u.find('@');
-
-    if let Some((psi, _)) = ps {
-        if let Some(pei) = pe {
-            return format!("{}:<PASSWORD>{}", &u[0..psi], &u[pei..]);
-        }
+    let mut u = url.clone();
+    if u.password().is_some() {
+        let _ = u.set_password(Some("***"));
     }
-    u
+    u.to_string()
 }
 
 /// Classified result of a dyndns2 update request. See DYNDNS2.md for the full
@@ -1084,12 +1069,12 @@ async fn sleep_until_opt(deadline: Option<SystemTime>) {
     }
 }
 
-async fn update_worker(mut rx: Receiver<HashMap<IfaceIpAddr, IfaceIpAddrData>>, conf: Config) {
+async fn update_worker(mut rx: Receiver<AddrMap>, conf: Config) {
     let client = build_http_client(&conf);
     let mut state4: PushState<Ipv4Addr> = PushState::new(&conf);
     let mut state6: PushState<Ipv6Addr> = PushState::new(&conf);
 
-    let mut current_addrs: Option<HashMap<IfaceIpAddr, IfaceIpAddrData>> = None;
+    let mut current_addrs: Option<AddrMap> = None;
     let (mut desired4, mut desired6): (Option<Ipv4Addr>, Option<Ipv6Addr>) = (None, None);
     // Debounce window: set when the best address changes, cleared when it expires.
     let mut settle: Option<SystemTime> = None;
@@ -1147,20 +1132,16 @@ async fn update_worker(mut rx: Receiver<HashMap<IfaceIpAddr, IfaceIpAddrData>>, 
 /// One update round for `--oneshot`. Returns false when a DDNS push was attempted
 /// and did not succeed, so the caller can exit non-zero.
 async fn oneshot(conf: &Config) -> bool {
-    let (mut conn, handle, _messages) =
-        new_connection().expect("Failed to make netlink connection. Check privileges.");
-
-    let groups = RTNLGRP_LINK | RTNLGRP_IPV4_IFADDR | RTNLGRP_IPV6_IFADDR;
-
-    let addr = SocketAddr::new(0, groups);
-    conn.socket_mut()
-        .socket_mut()
-        .bind(&addr)
-        .expect("Failed to bind to netlink socket.");
-
+    let (conn, handle, _) = nl_connect(0);
     tokio::spawn(conn);
 
-    let iface_addrs_map = get_iface_addrs(&handle, conf).await;
+    let iface_addrs_map = match get_iface_addrs(&handle, conf).await {
+        Ok(addrs) => addrs,
+        Err(e) => {
+            error!("Failed to read addresses from the kernel: {}", e);
+            return false;
+        }
+    };
     debug!("{:?}", iface_addrs_map);
 
     apply_hooks(&iface_addrs_map, conf).await;
@@ -1309,6 +1290,9 @@ fn validate_config(conf: &Config) -> Result<(), String> {
             url.scheme()
         ));
     }
+    if url.scheme() == "http" && (url.password().is_some() || !url.username().is_empty()) {
+        warn!("ddns_url uses plain http: the credentials are sent unencrypted");
+    }
     if conf.ddns_max_updates_per_hour == 0 {
         return Err("ddns_max_updates_per_hour must be at least 1".to_string());
     }
@@ -1346,6 +1330,22 @@ fn validate_config(conf: &Config) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+/// The config holds the DDNS password; nobody but its owner should be able to read it.
+fn warn_if_config_readable(path: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = std::fs::metadata(path) {
+        let mode = meta.permissions().mode();
+        if mode & 0o077 != 0 {
+            warn!(
+                "{} is accessible by group/others (mode {:o}); it holds the DDNS \
+                 password, consider chmod 600",
+                path,
+                mode & 0o777
+            );
+        }
+    }
 }
 
 /// Wait for whichever termination signal arrives first; returns its name.
@@ -1417,6 +1417,7 @@ async fn main() {
     info!("Read config file {} finished", args.config);
     info!("Set log level {:?}", loglevel);
 
+    warn_if_config_readable(&args.config);
     if let Err(e) = validate_config(&conf) {
         error!("Invalid configuration: {}", e);
         std::process::exit(1);
@@ -1593,6 +1594,20 @@ mod tests {
         assert!(extra
             .as_str()
             .starts_with("https://ddns.example.com/update?system=dyndns&myip=192.0.2.1&hostname="));
+    }
+
+    #[test]
+    fn sanitize_url_masks_only_the_password() {
+        let u = |s: &str| sanitize_url(&reqwest::Url::parse(s).unwrap());
+        assert_eq!(
+            u("https://user:secret@h.example:8443/up?myip=1.2.3.4"),
+            "https://user:***@h.example:8443/up?myip=1.2.3.4"
+        );
+        assert_eq!(
+            u("https://user@h.example:8443/up"),
+            "https://user@h.example:8443/up"
+        );
+        assert_eq!(u("https://h.example/up"), "https://h.example/up");
     }
 
     #[test]
