@@ -179,17 +179,16 @@ jobs:
           name: bin-${{ matrix.arch }}
           path: teleddns-${{ matrix.musl }}.tar.gz
 
-      # Not deb-*: that pattern is publish-apt's, one artifact per suite.
       - name: Upload .deb
         uses: actions/upload-artifact@v4
         with:
-          name: built-deb-${{ matrix.arch }}
+          name: deb-${{ matrix.arch }}
           path: dist/*.deb
 
   # Install and run each architecture's .deb in every suite it is published to,
-  # under QEMU, then hand it to publish-apt as deb-<suite>-<arch>. The suites are
-  # the Codenames in teleinfra ansible/slon-reprepro.yml. armel is Debian only:
-  # Ubuntu has never had an armel port.
+  # under QEMU. The suites are the Codenames of the APT repo (teleinfra
+  # ansible/files/slon.telephant.eu/reprepro/teleddns/distributions). armel is
+  # Debian only: Ubuntu has never had an armel port.
   test-debs:
     name: Test .deb (${{ matrix.suite }}/${{ matrix.arch }})
     needs: build-binaries
@@ -224,7 +223,7 @@ jobs:
       - name: Download the ${{ matrix.arch }} .deb
         uses: actions/download-artifact@v4
         with:
-          name: built-deb-${{ matrix.arch }}
+          name: deb-${{ matrix.arch }}
           path: dist
 
       - name: Set up QEMU
@@ -235,12 +234,6 @@ jobs:
           docker run --rm --platform ${{ matrix.platform }} \
             -v "$PWD/dist:/dist" -w /dist ${{ matrix.image }} \
             sh -c 'apt-get update -qq && apt-get install -y ./*.deb && teleddns --version'
-
-      - name: Upload .deb artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: deb-${{ matrix.suite }}-${{ matrix.arch }}
-          path: dist/*.deb
 
   github-release:
     name: Create GitHub Release
@@ -272,53 +265,24 @@ jobs:
     needs: test-debs
     runs-on: ubuntu-latest
     steps:
-      # One directory per artifact: deb-<suite>-<arch>/*.deb
       - name: Download .deb artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: deb-*
-          path: debs
+          merge-multiple: true
 
-      # The key is bound on the server to a forced command
-      # (/usr/local/bin/apt-publish teleddns, managed by teleinfra
-      # ansible/slon-reprepro.yml). The only thing the client chooses is the
-      # suite: `ssh ... <suite>` with a tar of that suite's .debs on stdin, or
-      # `ssh ... check <suite>...`. No shell, no scp.
+      # The key may only run /usr/local/bin/apt-publish teleddns on slon (teleinfra
+      # ansible/slon-reprepro.yml). It takes a tar of .debs on stdin and puts each
+      # one into every suite that lists its architecture. No shell, no scp.
       - name: Upload and publish to APT repo
         env:
           SSH_KEY: ${{ secrets.APT_SSH_KEY }}
           SSH_HOST: ${{ secrets.APT_SSH_HOST }}
           SSH_USER: ${{ secrets.APT_SSH_USER }}
-          # Pinned host key(s), i.e. `ssh-keyscan -t ed25519 <host>` output
-          # verified against the server, rather than trusting on first use.
-          SSH_KNOWN_HOSTS: ${{ secrets.APT_SSH_KNOWN_HOSTS }}
         run: |
-          if [ -z "$SSH_KNOWN_HOSTS" ]; then
-            echo "::error::the APT_SSH_KNOWN_HOSTS secret is not set"
-            exit 1
-          fi
           mkdir -p ~/.ssh
           printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
-          remote() { ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "${SSH_USER}@${SSH_HOST}" "$@"; }
-
-          # The suite comes from the artifact name, not from the package version.
-          suites="$(ls debs | sed -n 's/^deb-\([a-z0-9]*\)-[a-z0-9]*$/\1/p' | sort -u)"
-          if [ -z "$suites" ]; then
-            echo "::error::no deb-<suite>-<arch> artifacts found"
-            exit 1
-          fi
-
-          # Fail before anything is published if the repo lacks a suite.
-          remote check $suites
-
-          # One upload per suite, included by one reprepro call: a suite gets
-          # all of its architectures or none.
-          for suite in $suites; do
-            mkdir -p "out/$suite"
-            cp debs/deb-"$suite"-*/*.deb "out/$suite/"
-            echo "Publishing to $suite:"
-            ls "out/$suite"
-            (cd "out/$suite" && tar -cf - *.deb) | remote "$suite"
-          done
+          ls -l *.deb
+          # The runner is fresh, so the host key is accepted on first contact.
+          tar -cf - *.deb | ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "${SSH_USER}@${SSH_HOST}"
