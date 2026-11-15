@@ -17,6 +17,9 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # ci.yml pins rust-toolchain to the MSRV on purpose; @stable needs no bumps.
+    ignore:
+      - dependency-name: dtolnay/rust-toolchain
     groups:
       actions:
         patterns:
