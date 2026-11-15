@@ -234,33 +234,53 @@ jobs:
     needs: build-debs
     runs-on: ubuntu-latest
     steps:
+      # One directory per artifact: deb-<suite>-<arch>/*.deb
       - name: Download .deb artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: deb-*
-          merge-multiple: true
+          path: debs
 
+      # The key is bound on the server to a forced command
+      # (/usr/local/bin/apt-publish teleddns, managed by teleinfra
+      # ansible/slon-reprepro.yml). The only thing the client chooses is the
+      # suite: `ssh ... <suite>` with a tar of that suite's .debs on stdin, or
+      # `ssh ... check <suite>...`. No shell, no scp.
       - name: Upload and publish to APT repo
         env:
           SSH_KEY: ${{ secrets.APT_SSH_KEY }}
           SSH_HOST: ${{ secrets.APT_SSH_HOST }}
           SSH_USER: ${{ secrets.APT_SSH_USER }}
+          # Pinned host key(s), i.e. `ssh-keyscan -t ed25519 <host>` output
+          # verified against the server, rather than trusting on first use.
+          SSH_KNOWN_HOSTS: ${{ secrets.APT_SSH_KNOWN_HOSTS }}
         run: |
+          if [ -z "$SSH_KNOWN_HOSTS" ]; then
+            echo "::error::the APT_SSH_KNOWN_HOSTS secret is not set"
+            exit 1
+          fi
           mkdir -p ~/.ssh
-          echo "$SSH_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan "$SSH_HOST" >> ~/.ssh/known_hosts
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          remote() { ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "${SSH_USER}@${SSH_HOST}" "$@"; }
 
-          # Each package goes to the one suite it was built for; the suite is
-          # encoded in the version as <version>~<suite>1.
-          for deb in *.deb; do
-            suite="$(echo "$deb" | sed -n 's/.*~\([a-z][a-z]*\)[0-9]*_.*/\1/p')"
-            if [ -z "$suite" ]; then
-              echo "::error::cannot determine suite from $deb"
-              exit 1
-            fi
-            echo "Publishing $deb to $suite..."
-            scp "$deb" "${SSH_USER}@${SSH_HOST}:/tmp/"
-            ssh "${SSH_USER}@${SSH_HOST}" \
-              "cd /srv/apt/www/teleddns && reprepro includedeb $suite /tmp/$deb && rm /tmp/$deb"
+          # The suite comes from the artifact name, not from the package version.
+          suites="$(ls debs | sed -n 's/^deb-\([a-z0-9]*\)-[a-z0-9]*$/\1/p' | sort -u)"
+          if [ -z "$suites" ]; then
+            echo "::error::no deb-<suite>-<arch> artifacts found"
+            exit 1
+          fi
+
+          # Fail before anything is published if the repo lacks a suite.
+          remote check $suites
+
+          # One upload per suite, included by one reprepro call: a suite gets
+          # all of its architectures or none.
+          for suite in $suites; do
+            mkdir -p "out/$suite"
+            cp debs/deb-"$suite"-*/*.deb "out/$suite/"
+            echo "Publishing to $suite:"
+            ls "out/$suite"
+            (cd "out/$suite" && tar -cf - *.deb) | remote "$suite"
           done
