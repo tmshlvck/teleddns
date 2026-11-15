@@ -81,7 +81,7 @@ reads `/etc/resolv.conf` and ignores `nsswitch.conf`. That is fine for the usual
 case of a public DDNS hostname, including on systemd-resolved systems, but if you
 depend on a custom NSS module to resolve your DDNS server, use a package instead.
 
-Then edit and install `teleddns.service`.
+Then edit and install `debian/teleddns.service`.
 
 #### What each artifact is
 
@@ -112,7 +112,7 @@ cd teleddns
 cargo install --root /usr/local --path .
 ```
 
-Then edit and install `teleddns.service`.
+Then edit and install `debian/teleddns.service`.
 
 ### Setup the client
 

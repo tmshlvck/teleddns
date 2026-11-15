@@ -252,6 +252,7 @@ Wants=network-online.target
 # Give up rather than restart forever: each start publishes the current address.
 StartLimitIntervalSec=300
 StartLimitBurst=5
+ConditionPathExists=/etc/teleddns/teleddns.yaml
 
 [Service]
 Type=simple

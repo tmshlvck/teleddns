@@ -11,6 +11,5 @@ if [ ! -f /etc/teleddns/teleddns.yaml ]; then
     echo "TeleDDNS installed. To configure:"
     echo "  install -m 600 /usr/share/doc/teleddns/teleddns.yaml.sample /etc/teleddns/teleddns.yaml"
     echo "  # Edit /etc/teleddns/teleddns.yaml with your DDNS credentials"
-    echo "  systemctl daemon-reload"
     echo "  systemctl enable --now teleddns"
 fi

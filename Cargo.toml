@@ -41,18 +41,22 @@ TeleDDNS is an advanced DDNS client with daemonization support (as a systemd \
 service) or one-shot running capability. When running in daemon mode, it \
 listens for Netlink messages and pools updates to minimize both DDNS \
 convergence time and resource usage."""
-depends = "$auto"
+# Not $auto: the binaries are built with cargo-zigbuild against glibc 2.36 and need
+# at most GLIBC_2.34 (the release workflow checks this), and zig links the unwinder
+# in, so there is no libgcc_s.
+depends = "libc6 (>= 2.34)"
 section = "net"
 priority = "optional"
 assets = [
     ["target/release/teleddns", "usr/bin/", "755"],
-    ["teleddns.service", "lib/systemd/system/", "644"],
     ["README.md", "usr/share/doc/teleddns/README.md", "644"],
     ["teleddns.yaml.sample", "usr/share/doc/teleddns/teleddns.yaml.sample", "644"],
     ["teleddns.1", "usr/share/man/man1/teleddns.1", "644"],
 ]
 maintainer-scripts = "debian/"
-systemd-units = { enable = false }
+# debian/teleddns.service. Not enabled on install (it needs a config first); an
+# enabled service is restarted on upgrade.
+systemd-units = { unit-scripts = "debian/", enable = false }
 
 [package.metadata.generate-rpm.requires]
 systemd = "*"

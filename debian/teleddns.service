@@ -6,6 +6,8 @@ Wants=network-online.target
 # so an endless crash loop would spend the server's hourly update budget.
 StartLimitIntervalSec=300
 StartLimitBurst=5
+# Installed but not configured yet: skip the start instead of failing it.
+ConditionPathExists=/etc/teleddns/teleddns.yaml
 
 [Service]
 Type=simple

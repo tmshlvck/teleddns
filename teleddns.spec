@@ -56,7 +56,7 @@ gzip -9 -k teleddns.1
 install -D -m 755 target/release/teleddns %{buildroot}%{_bindir}/teleddns
 
 # Install systemd service
-install -D -m 644 teleddns.service %{buildroot}%{_unitdir}/teleddns.service
+install -D -m 644 debian/teleddns.service %{buildroot}%{_unitdir}/teleddns.service
 
 # Install man page
 install -D -m 644 teleddns.1.gz %{buildroot}%{_mandir}/man1/teleddns.1.gz
