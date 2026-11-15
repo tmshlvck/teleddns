@@ -33,12 +33,10 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::io::LineWriter;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::panic;
 use std::time::SystemTime;
 use tokio::process::Command;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc::{self, Receiver, Sender};
-use tokio::task::JoinSet;
 use tokio::time::Duration;
 
 /// Format a duration for a log line, truncated to whole seconds: sub-second
@@ -58,6 +56,9 @@ const SERVER_UPDATES_PER_HOUR: u32 = 60;
 
 /// A hook runs inside the update worker; one that hangs must not stop DDNS updates.
 const HOOK_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long a shutdown waits for an update in flight. Below the unit's TimeoutStopSec.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(30);
 
 // Netlink multicast group bitmasks (RTMGRP_* in <linux/rtnetlink.h>).
 const RTMGRP_LINK: u32 = 1;
@@ -1430,36 +1431,55 @@ async fn main() {
             std::process::exit(1);
         }
     } else {
-        let mut jset = JoinSet::new();
-        let (tx, rx) = mpsc::channel(10);
+        std::process::exit(daemon(conf).await);
+    }
+}
 
-        jset.spawn(update_worker(rx, conf.clone()));
-        jset.spawn(netlink_events_receiver(tx, conf.clone()));
+/// Run the netlink receiver and the update worker until a termination signal, or
+/// until either task dies (a panic or a lost netlink socket), which exits non-zero
+/// so systemd restarts us instead of leaving a process that no longer updates.
+async fn daemon(conf: Config) -> i32 {
+    let (tx, rx) = mpsc::channel(10);
+    let mut worker = tokio::spawn(update_worker(rx, conf.clone()));
+    let mut receiver = tokio::spawn(netlink_events_receiver(tx, conf));
 
-        // systemd sends SIGTERM on `systemctl stop`, a terminal SIGINT on Ctrl-C;
-        // handling only SIGHUP turned both into a hard kill.
-        info!("Listener started, waiting for a termination signal");
-        match wait_for_termination().await {
-            Ok(sig) => info!("Terminating on {}.", sig),
+    info!("Listener started, waiting for a termination signal");
+    let code = tokio::select! {
+        sig = wait_for_termination() => match sig {
+            Ok(sig) => {
+                info!("Terminating on {}.", sig);
+                0
+            }
             Err(e) => {
                 error!("Failed to install the signal handlers: {}", e);
-                std::process::exit(1);
+                1
             }
+        },
+        res = &mut receiver => {
+            error!("Netlink receiver stopped unexpectedly: {:?}", res);
+            1
         }
-        jset.shutdown().await;
+        res = &mut worker => {
+            error!("Update worker stopped unexpectedly: {:?}", res);
+            return 1; // already joined, nothing left to wait for
+        }
+    };
 
-        let mut output = Vec::new();
-        while let Some(res) = jset.join_next().await {
-            match res {
-                Ok(t) => output.push(t),
-                Err(err) if err.is_panic() => panic::resume_unwind(err.into_panic()),
-                Err(err) => panic!("{err}"),
-            }
-        }
+    // Stopping the receiver closes the channel; the worker notices once it has
+    // finished any update or hook in flight.
+    receiver.abort();
+    if tokio::time::timeout(SHUTDOWN_GRACE, &mut worker)
+        .await
+        .is_err()
+    {
+        warn!(
+            "Update worker did not finish within {}",
+            fmt_dur(SHUTDOWN_GRACE)
+        );
+        worker.abort();
     }
-
-    info!("Sucessfully shutdown");
-    std::process::exit(0);
+    info!("Shut down");
+    code
 }
 
 #[cfg(test)]
