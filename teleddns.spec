@@ -7,7 +7,7 @@
 # COPR builds from this spec file with network access enabled.
 
 Name:           teleddns
-Version:        0.4.3
+Version:        0.4.4
 Release:        1%{?dist}
 Summary:        Advanced DDNS client with Netlink support
 
@@ -93,6 +93,10 @@ fi
 %dir %{_sysconfdir}/teleddns
 
 %changelog
+* Sun Nov 15 2026 Tomas Hlavacek <tmshlvck@gmail.com> - 0.4.4-1
+- Security: dependency update, rustls 0.23.46 (RUSTSEC-2026-0285, -0346,
+  -0348, -0349), rustls-webpki and webpki-roots (distrusted CAs).
+
 * Sun Nov 15 2026 Tomas Hlavacek <tmshlvck@gmail.com> - 0.4.3-1
 - Daemon: a failed netlink dump no longer publishes an empty address set; both
   tasks are supervised and an in-flight update finishes on shutdown.
