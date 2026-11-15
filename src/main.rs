@@ -31,11 +31,10 @@ use serde_derive::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fs::File;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::time::SystemTime;
 use tokio::process::Command;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc::{self, Receiver, Sender};
-use tokio::time::Duration;
+use tokio::time::{Duration, Instant};
 
 /// Format a duration for a log line, truncated to whole seconds: sub-second
 /// precision is noise for timers on this scale.
@@ -331,10 +330,7 @@ async fn netlink_events_receiver(tx: Sender<AddrMap>, conf: Config) {
         None
     } else {
         info!("Polling the kernel for addresses every {}", fmt_dur(period));
-        Some(tokio::time::interval_at(
-            tokio::time::Instant::now() + period,
-            period,
-        ))
+        Some(tokio::time::interval_at(Instant::now() + period, period))
     };
 
     loop {
@@ -731,7 +727,7 @@ struct RateBudget {
     min_interval: Duration,
     max_per_window: u32,
     /// When we sent, oldest first, pruned to `RATE_WINDOW`.
-    sent: VecDeque<SystemTime>,
+    sent: VecDeque<Instant>,
 }
 
 impl RateBudget {
@@ -743,36 +739,31 @@ impl RateBudget {
         }
     }
 
-    fn prune(&mut self, now: SystemTime) {
+    fn prune(&mut self, now: Instant) {
         while let Some(oldest) = self.sent.front() {
-            match now.duration_since(*oldest) {
-                Ok(age) if age >= RATE_WINDOW => {
-                    self.sent.pop_front();
-                }
-                _ => break,
+            if now.saturating_duration_since(*oldest) < RATE_WINDOW {
+                break;
             }
+            self.sent.pop_front();
         }
     }
 
     /// `None` when a request may go out now, `Some(wait)` when it may not.
-    fn check(&mut self, now: SystemTime) -> Option<Duration> {
+    fn check(&mut self, now: Instant) -> Option<Duration> {
         self.prune(now);
         if let Some(last) = self.sent.back() {
-            let since = now.duration_since(*last).unwrap_or(Duration::ZERO);
-            if let Some(wait) = self.min_interval.checked_sub(since) {
-                if !wait.is_zero() {
-                    return Some(wait);
-                }
+            let wait = self
+                .min_interval
+                .saturating_sub(now.saturating_duration_since(*last));
+            if !wait.is_zero() {
+                return Some(wait);
             }
         }
         if self.sent.len() as u32 >= self.max_per_window {
             // Wait for the oldest send to age out of the window. Never zero, so a
             // caller that keeps asking cannot spin.
             let wait = match self.sent.front() {
-                Some(oldest) => {
-                    let age = now.duration_since(*oldest).unwrap_or(Duration::ZERO);
-                    RATE_WINDOW.saturating_sub(age)
-                }
+                Some(oldest) => RATE_WINDOW.saturating_sub(now.saturating_duration_since(*oldest)),
                 None => RATE_WINDOW,
             };
             return Some(wait.max(Duration::from_secs(1)));
@@ -780,7 +771,7 @@ impl RateBudget {
         None
     }
 
-    fn record(&mut self, now: SystemTime) {
+    fn record(&mut self, now: Instant) {
         self.sent.push_back(now);
         self.prune(now);
     }
@@ -819,9 +810,9 @@ struct PushState<A> {
     /// Value the server rejected permanently — do not send it again.
     rejected: Option<A>,
     /// Last time we sent anything for this family; drives the resync tick.
-    last_attempt: Option<SystemTime>,
+    last_attempt: Option<Instant>,
     /// Earliest time a retry may be attempted after a transient failure.
-    next_retry: Option<SystemTime>,
+    next_retry: Option<Instant>,
     /// Current back-off; zero until the first transient failure.
     backoff: Duration,
     budget: RateBudget,
@@ -842,18 +833,20 @@ impl<A> PushState<A> {
     /// Time left until the unconditional re-publish. Counted from the last *attempt*,
     /// not the last success: that way a name the server keeps refusing is retried
     /// once per period instead of on every wake-up.
-    fn resync(&self, now: SystemTime, conf: &Config) -> Resync {
+    fn resync(&self, now: Instant, conf: &Config) -> Resync {
         if conf.ddns_resync_period.is_zero() {
             return Resync::Disabled;
         }
         let Some(last) = self.last_attempt else {
             return Resync::Due;
         };
-        // A clock that moved backwards (no RTC, pre-NTP boot) counts as due.
-        let elapsed = now.duration_since(last).unwrap_or(conf.ddns_resync_period);
-        match conf.ddns_resync_period.checked_sub(elapsed) {
-            Some(left) if !left.is_zero() => Resync::After(left),
-            _ => Resync::Due,
+        let left = conf
+            .ddns_resync_period
+            .saturating_sub(now.saturating_duration_since(last));
+        if left.is_zero() {
+            Resync::Due
+        } else {
+            Resync::After(left)
         }
     }
 }
@@ -872,7 +865,7 @@ impl<A: Copy + PartialEq + Into<IpAddr> + std::fmt::Display> PushState<A> {
         client: &reqwest::Client,
         conf: &Config,
     ) -> Option<Duration> {
-        let now = SystemTime::now();
+        let now = Instant::now();
         let Some(addr) = desired else {
             // Losing an address is not an update: the DDNS endpoint never deletes a
             // record set (§6). Forget what we published and wait for a new address.
@@ -899,17 +892,16 @@ impl<A: Copy + PartialEq + Into<IpAddr> + std::fmt::Display> PushState<A> {
             return resync.wake();
         }
         if !forced {
-            if let Some(next) = self.next_retry {
-                if let Ok(wait) = next.duration_since(now) {
-                    if !wait.is_zero() {
-                        debug!(
-                            "Holding back the update of {} for {}: retry back-off",
-                            addr,
-                            fmt_dur(wait)
-                        );
-                        return Some(wait);
-                    }
-                }
+            let wait = self
+                .next_retry
+                .map_or(Duration::ZERO, |next| next.saturating_duration_since(now));
+            if !wait.is_zero() {
+                debug!(
+                    "Holding back the update of {} for {}: retry back-off",
+                    addr,
+                    fmt_dur(wait)
+                );
+                return Some(wait);
             }
         }
         if let Some(wait) = self.budget.check(now) {
@@ -931,7 +923,7 @@ impl<A: Copy + PartialEq + Into<IpAddr> + std::fmt::Display> PushState<A> {
         self.last_attempt = Some(now);
         let outcome = send_ddns_update(client, addr.into(), conf).await;
         // The request itself took time; do not credit it to the back-off.
-        let now = SystemTime::now();
+        let now = Instant::now();
 
         if outcome.is_success() {
             self.confirmed = Some(addr);
@@ -963,14 +955,9 @@ impl<A: Copy + PartialEq + Into<IpAddr> + std::fmt::Display> PushState<A> {
 }
 
 /// Sleep until `deadline`, or forever when there is nothing scheduled.
-async fn sleep_until_opt(deadline: Option<SystemTime>) {
+async fn sleep_until_opt(deadline: Option<Instant>) {
     match deadline {
-        Some(t) => {
-            let d = t
-                .duration_since(SystemTime::now())
-                .unwrap_or(Duration::ZERO);
-            tokio::time::sleep(d).await
-        }
+        Some(t) => tokio::time::sleep_until(t).await,
         None => std::future::pending().await,
     }
 }
@@ -983,9 +970,9 @@ async fn update_worker(mut rx: Receiver<AddrMap>, conf: Config) {
     let mut current_addrs: Option<AddrMap> = None;
     let (mut desired4, mut desired6): (Option<Ipv4Addr>, Option<Ipv6Addr>) = (None, None);
     // Debounce window: set when the best address changes, cleared when it expires.
-    let mut settle: Option<SystemTime> = None;
+    let mut settle: Option<Instant> = None;
     // Next time a family wants attention (retry, rate budget, resync).
-    let mut wake_at: Option<SystemTime> = None;
+    let mut wake_at: Option<Instant> = None;
 
     loop {
         // While the settle window is open we wait for it and nothing else: a due
@@ -1015,7 +1002,7 @@ async fn update_worker(mut rx: Receiver<AddrMap>, conf: Config) {
                     // Arm the debounce window once and do not slide it: a flapping
                     // address would otherwise postpone the update indefinitely.
                     if settle.is_none() {
-                        settle = Some(SystemTime::now() + conf.ddns_settle_delay);
+                        settle = Some(Instant::now() + conf.ddns_settle_delay);
                     }
                 }
                 continue;
@@ -1027,7 +1014,7 @@ async fn update_worker(mut rx: Receiver<AddrMap>, conf: Config) {
         let wake6 = state6.sync(desired6, false, &client, &conf).await;
         let wake4 = state4.sync(desired4, false, &client, &conf).await;
         let next = [wake4, wake6].into_iter().flatten().min();
-        wake_at = next.map(|d| SystemTime::now() + d);
+        wake_at = next.map(|d| Instant::now() + d);
         match next {
             Some(d) => debug!("Next scheduled attempt in {}", fmt_dur(d)),
             None => debug!("Nothing scheduled; waiting for an address change"),
@@ -1708,8 +1695,9 @@ mod tests {
     }
 
     /// An arbitrary fixed point in time; the budget only ever looks at differences.
-    fn t0() -> SystemTime {
-        SystemTime::UNIX_EPOCH + secs(1_000_000_000)
+    fn t0() -> Instant {
+        static T0: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+        *T0.get_or_init(Instant::now)
     }
 
     #[test]
@@ -1800,9 +1788,6 @@ mod tests {
             Resync::After(secs(3000))
         );
         assert_eq!(st.resync(t0() + secs(3600), &conf), Resync::Due);
-        // A clock that moved backwards (no RTC, pre-NTP boot) counts as due rather
-        // than stalling the resync until the clock catches up.
-        assert_eq!(st.resync(t0() - secs(10), &conf), Resync::Due);
 
         conf.ddns_resync_period = Duration::ZERO;
         assert_eq!(st.resync(t0(), &conf), Resync::Disabled);
@@ -1839,7 +1824,7 @@ mod tests {
         assert_eq!(st.confirmed, None, "a failed push confirms nothing");
 
         // The back-off holds a retry back until it elapses, and reports the remainder.
-        st.next_retry = Some(SystemTime::now() + secs(120));
+        st.next_retry = Some(Instant::now() + secs(120));
         let wait = st.sync(Some(addr), false, &client, &conf).await.unwrap();
         assert!(wait <= secs(120) && wait > secs(110), "wait was {wait:?}");
         // A forced push (control socket, §8) ignores the back-off.
@@ -1857,7 +1842,7 @@ mod tests {
 
         // Simulate a `badauth`/`!yours` answer for this address.
         st.rejected = Some(addr);
-        st.last_attempt = Some(SystemTime::now());
+        st.last_attempt = Some(Instant::now());
         let wake = st.sync(Some(addr), false, &client, &conf).await;
         assert_eq!(st.confirmed, None, "no push happened, nothing to confirm");
         assert_eq!(st.backoff, Duration::ZERO, "no retry was scheduled");
@@ -1880,7 +1865,7 @@ mod tests {
         let addr: Ipv4Addr = "192.0.2.1".parse().unwrap();
 
         st.confirmed = Some(addr);
-        st.last_attempt = Some(SystemTime::now());
+        st.last_attempt = Some(Instant::now());
         let wake = st.sync(Some(addr), false, &client, &conf).await;
         assert_eq!(st.backoff, Duration::ZERO, "nothing was sent");
         assert!(
