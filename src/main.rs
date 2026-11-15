@@ -27,7 +27,7 @@ use netlink_packet_route::link::*;
 use netlink_packet_route::RouteNetlinkMessage::{self, *};
 use netlink_sys::{AsyncSocket, SocketAddr};
 use rtnetlink::{new_connection, Error, Handle};
-use serde_derive::{Deserialize, Serialize};
+use serde_derive::Deserialize;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fs::File;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -93,22 +93,15 @@ async fn nl_get_iface_map(handle: &Handle) -> Result<HashMap<u32, String>, Error
     let mut res: HashMap<u32, String> = HashMap::new();
     while let Some(msg) = lget.try_next().await? {
         debug!("response {:?}", msg);
-        let mut ifname: Option<String> = None;
-        let mut is_up = false;
-        if msg.header.flags.contains(LinkFlags::Up)
-            && msg.header.flags.contains(LinkFlags::LowerUp)
-            && msg.header.flags.contains(LinkFlags::Running)
-        {
-            is_up = true;
-        }
-        for nla in msg.attributes.into_iter() {
+        let mut ifname = None;
+        let mut is_up = msg
+            .header
+            .flags
+            .contains(LinkFlags::Up | LinkFlags::LowerUp | LinkFlags::Running);
+        for nla in msg.attributes {
             match nla {
-                LinkAttribute::IfName(ifn) => {
-                    ifname = Some(ifn);
-                }
-                LinkAttribute::OperState(State::Up) => {
-                    is_up = true;
-                }
+                LinkAttribute::IfName(ifn) => ifname = Some(ifn),
+                LinkAttribute::OperState(State::Up) => is_up = true,
                 _ => {}
             }
         }
@@ -119,16 +112,13 @@ async fn nl_get_iface_map(handle: &Handle) -> Result<HashMap<u32, String>, Error
     Ok(res)
 }
 
-fn match_iface_pattern(ifname: &str, pattern_list: &Vec<String>) -> bool {
-    let negative = format!("-{}", ifname);
+/// First match wins: `name` includes, `-name` excludes, `*` includes everything.
+fn match_iface_pattern(ifname: &str, pattern_list: &[String]) -> bool {
     for ptr in pattern_list {
-        if ptr == &negative {
+        if ptr.strip_prefix('-') == Some(ifname) {
             return false;
         }
-        if ptr == ifname {
-            return true;
-        }
-        if ptr == "*" {
+        if ptr == ifname || ptr == "*" {
             return true;
         }
     }
@@ -597,12 +587,9 @@ fn build_http_client(conf: &Config) -> reqwest::Client {
         .expect("Failed to build HTTP client")
 }
 
-/// Classify a dyndns2 response (DYNDNS2.md §8, §12.2). The body carries one line
-/// per requested hostname, and a request-level failure is a single line; since we
-/// always send exactly one hostname, our result is the first non-empty line. Its
-/// first whitespace-delimited token is the keyword (matched case-insensitively),
-/// the remainder is informational. The HTTP status is only a fallback, for servers
-/// that answer with an unrecognized or empty body.
+/// Classify a dyndns2 response (DYNDNS2.md §8, §12.2). We send one hostname, so the
+/// result is the first non-empty line: a case-insensitive keyword, then informational
+/// text. The HTTP status only decides for an unknown or empty body.
 fn classify_ddns_response(status: reqwest::StatusCode, body: &str) -> DdnsOutcome {
     let line = body
         .lines()
@@ -716,12 +703,10 @@ async fn send_ddns_update(client: &reqwest::Client, ip: IpAddr, conf: &Config) -
     }
 }
 
-/// Client-side rate governor. teleddns-server allows 60 updates per hour and
-/// address family (DYNDNS2.md §10) and answers `abuse` past that, so we keep our own
-/// budget comfortably below it: a flapping address, a retry loop or a restart loop
-/// must never be able to get us rate limited. The budget only ever *delays* a
-/// request — the pending address is always the latest one, so a burst collapses
-/// into a single update carrying the final value.
+/// Client-side rate governor, kept well below the server's 60 updates per hour and
+/// family (DYNDNS2.md §10) so no flapping address, retry or restart loop gets us rate
+/// limited. It only delays: the pending address is always the latest one, so a burst
+/// collapses into one update carrying the final value.
 #[derive(Debug)]
 struct RateBudget {
     min_interval: Duration,
@@ -852,12 +837,9 @@ impl<A> PushState<A> {
 }
 
 impl<A: Copy + PartialEq + Into<IpAddr> + std::fmt::Display> PushState<A> {
-    /// Bring the server in line with `desired`. `forced` (a control-socket
-    /// `send_update`, §8) skips the back-off, but never the rate budget.
-    ///
-    /// Returns how long until this family wants to be looked at again — a pending
-    /// retry, a rate-budget wait or the next resync — or `None` when nothing is
-    /// scheduled and only a new address can change anything.
+    /// Bring the server in line with `desired`. `forced` (`--oneshot`) skips the
+    /// back-off, never the rate budget. Returns when this family next wants attention
+    /// (retry, rate-budget wait, resync), or `None` until a new address arrives.
     async fn sync(
         &mut self,
         desired: Option<A>,
@@ -1042,10 +1024,8 @@ async fn oneshot(conf: &Config) -> bool {
     let client = build_http_client(conf);
     let (best6, best4) = select_best(&iface_addrs_map, conf);
 
-    // `--oneshot` is an operator action: force the update through and report what
-    // happened. It starts from empty state, so there is nothing to hold it back —
-    // no debounce, no back-off, nothing previously confirmed to compare against.
-    // Continuous operation is the daemon's job; see the README.
+    // An operator action: force the update through and report. Fresh state means no
+    // debounce, back-off or earlier confirmation to hold it back.
     let mut state4: PushState<Ipv4Addr> = PushState::new(conf);
     let mut state6: PushState<Ipv6Addr> = PushState::new(conf);
     state6.sync(best6, true, &client, conf).await;
@@ -1054,19 +1034,11 @@ async fn oneshot(conf: &Config) -> bool {
     state4.confirmed == best4 && state6.confirmed == best6
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
+#[derive(Debug, PartialEq, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 struct Hook {
     shell: Option<String>,
     nft_sets_outfile: Option<String>,
-}
-
-fn default_report_ipv4_private() -> bool {
-    false
-}
-
-fn default_report_ipv6_ula() -> bool {
-    false
 }
 
 /// Debounce window: how long to wait for the address set to stop changing before
@@ -1107,12 +1079,6 @@ fn default_resync_period() -> Duration {
     Duration::from_secs(43200)
 }
 
-/// Periodic full address re-dump from the kernel. Off by default — netlink
-/// notifications are reliable; this exists for the paranoid.
-fn default_kernel_poll_period() -> Duration {
-    Duration::ZERO
-}
-
 fn default_http_timeout() -> Duration {
     Duration::from_secs(30)
 }
@@ -1120,7 +1086,7 @@ fn default_http_timeout() -> Duration {
 /// Unknown keys are refused rather than ignored: the config is usually generated
 /// (deploy.sh, packaging, config management), so a stale or misspelled key is a
 /// mistake worth reporting at startup instead of silently taking the default.
-#[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
+#[derive(Debug, PartialEq, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 struct Config {
     debug: Option<bool>,
@@ -1128,9 +1094,9 @@ struct Config {
     hostname: String,
     enable_ipv6: bool,
     enable_ipv4: bool,
-    #[serde(default = "default_report_ipv4_private")]
+    #[serde(default)]
     report_ipv4_private: bool,
-    #[serde(default = "default_report_ipv6_ula")]
+    #[serde(default)]
     report_ipv6_ula: bool,
     interfaces: Vec<String>,
     hooks: Option<Vec<Hook>>,
@@ -1149,10 +1115,8 @@ struct Config {
     ddns_retry_max: Duration,
     #[serde(default = "default_retry_ratelimit_min", with = "humantime_serde")]
     ddns_retry_ratelimit_min: Duration,
-    // The aliases are the names the released 0.3.x config used for the same
-    // settings. They are accepted so an upgrade does not refuse to start on a config
-    // that tuned them -- a rename is not a typo. `convert-config` (§7) will rewrite
-    // them, after which the aliases can go.
+    // The aliases are the 0.3.x names of the same settings, so an upgraded config
+    // that tuned them still loads.
     #[serde(
         default = "default_resync_period",
         with = "humantime_serde",
@@ -1160,7 +1124,7 @@ struct Config {
     )]
     ddns_resync_period: Duration,
     #[serde(
-        default = "default_kernel_poll_period",
+        default, // off: netlink notifications are reliable
         with = "humantime_serde",
         alias = "redump_interval"
     )]
@@ -1174,8 +1138,7 @@ struct Config {
 fn validate_config(conf: &Config) -> Result<(), String> {
     validate_hostname(&conf.hostname)
         .map_err(|e| format!("hostname {:?}: {}", conf.hostname, e))?;
-    // Not echoing the URL back: it may carry the password, and this message goes to
-    // the log.
+    // Not echoing the URL: it may carry the password.
     let url = reqwest::Url::parse(&conf.ddns_url).map_err(|e| format!("ddns_url: {e}"))?;
     if url.scheme() != "http" && url.scheme() != "https" {
         return Err(format!(
@@ -1199,8 +1162,6 @@ fn validate_config(conf: &Config) -> Result<(), String> {
     if conf.http_timeout.is_zero() {
         return Err("http_timeout must not be zero".to_string());
     }
-    // The server allows 60 updates per hour and family and answers `abuse` past that
-    // (DYNDNS2.md §10). A budget above that guarantees we find out the hard way.
     if conf.ddns_max_updates_per_hour > SERVER_UPDATES_PER_HOUR {
         warn!(
             "ddns_max_updates_per_hour is {}, above the {} per hour and family that \
@@ -1260,7 +1221,7 @@ struct Args {
     #[arg(short, long, default_value_t=String::from("/etc/teleddns/teleddns.yaml"))]
     config: String,
 
-    /// Do not deaemonize, run just one DDNS update & hooks.
+    /// Do not daemonize, run just one DDNS update & hooks.
     #[arg(short, long, default_value_t = false)]
     oneshot: bool,
 
@@ -1268,9 +1229,8 @@ struct Args {
     verbose: clap_verbosity_flag::Verbosity<clap_verbosity_flag::InfoLevel>,
 }
 
-/// Read and parse the config. A bad config is the operator's to fix, not a crash, so
-/// the caller reports it as a message: with `deny_unknown_fields` a stale or
-/// misspelled key ends up here, and serde names both the key and the line.
+/// Read and parse the config. Errors are a message for the operator, not a crash;
+/// for an unknown key serde names both the key and the line.
 fn load_config(path: &str) -> Result<Config, String> {
     let file = File::open(path).map_err(|e| e.to_string())?;
     serde_yaml::from_reader(file).map_err(|e| e.to_string())
@@ -1288,10 +1248,10 @@ async fn main() {
         }
     };
 
-    let loglevel = match conf.debug {
-        Some(false) => args.verbose.log_level_filter(),
-        Some(true) => log::LevelFilter::Debug,
-        None => args.verbose.log_level_filter(),
+    let loglevel = if conf.debug == Some(true) {
+        log::LevelFilter::Debug
+    } else {
+        args.verbose.log_level_filter()
     };
     let mut builder = env_logger::builder();
     builder
@@ -1685,7 +1645,7 @@ mod tests {
             ddns_retry_max: default_retry_max(),
             ddns_retry_ratelimit_min: default_retry_ratelimit_min(),
             ddns_resync_period: default_resync_period(),
-            ddns_kernel_poll_period: default_kernel_poll_period(),
+            ddns_kernel_poll_period: Duration::ZERO,
             http_timeout: default_http_timeout(),
         }
     }
@@ -1827,7 +1787,7 @@ mod tests {
         st.next_retry = Some(Instant::now() + secs(120));
         let wait = st.sync(Some(addr), false, &client, &conf).await.unwrap();
         assert!(wait <= secs(120) && wait > secs(110), "wait was {wait:?}");
-        // A forced push (control socket, §8) ignores the back-off.
+        // A forced push (`--oneshot`) ignores the back-off.
         st.sync(Some(addr), true, &client, &conf).await;
         assert!(st.last_attempt.is_some());
     }
