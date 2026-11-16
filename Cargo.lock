@@ -764,6 +764,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "netlink-proto"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "deb648c817503ada468a15b8fb7a37d2061079dc0905f2c6552392850279dd85"
+dependencies = [
+ "bytes",
+ "futures-channel",
+ "futures-util",
+ "log",
+ "netlink-packet-core",
+ "netlink-sys",
+]
+
+[[package]]
 name = "netlink-sys"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1066,7 +1080,7 @@ dependencies = [
  "log",
  "netlink-packet-core",
  "netlink-packet-route",
- "netlink-proto",
+ "netlink-proto 0.13.0",
  "netlink-sys",
  "nix",
  "thiserror",
@@ -1311,7 +1325,7 @@ dependencies = [
  "log",
  "netlink-packet-core",
  "netlink-packet-route",
- "netlink-proto",
+ "netlink-proto 0.14.1",
  "netlink-sys",
  "reqwest",
  "rtnetlink",
